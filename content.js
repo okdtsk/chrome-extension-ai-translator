@@ -280,17 +280,12 @@ class TranslationPopup {
     this.updateContent(this.getTranslateButtonHTML());
     
     const translateBtn = this.popup.querySelector('.ai-translator-translate-btn');
-    const closeBtn = this.popup.querySelector('.ai-translator-close');
     
     if (translateBtn) {
       translateBtn.addEventListener('click', () => {
         this.updateContent(this.getLoadingHTML());
         this.translateText(this.selectedText);
       });
-    }
-    
-    if (closeBtn) {
-      closeBtn.addEventListener('click', () => this.remove());
     }
   }
 
@@ -325,10 +320,6 @@ class TranslationPopup {
     // Re-setup drag listeners since we recreated the drag handle
     this.setupDragListeners();
     
-    const closeBtn = this.popup.querySelector('.ai-translator-close');
-    if (closeBtn) {
-      closeBtn.addEventListener('click', () => this.remove());
-    }
   }
 
   getTranslateButtonHTML() {
@@ -342,7 +333,6 @@ class TranslationPopup {
         <button class="ai-translator-translate-btn">
           Translate
         </button>
-        <div class="ai-translator-close">×</div>
       </div>
     `;
   }
@@ -368,7 +358,6 @@ class TranslationPopup {
     return `
       <div class="ai-translator-content">
         <div class="ai-translator-result">${this.escapeHtml(translation)}</div>
-        <div class="ai-translator-close">×</div>
       </div>
     `;
   }
