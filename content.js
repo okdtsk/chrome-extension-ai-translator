@@ -11,6 +11,13 @@ class TranslationPopup {
     this.lastKey = '';
     this.DOUBLE_KEY_TIMEOUT = 500; // ms between double key presses
     
+    // Dragging properties
+    this.isDragging = false;
+    this.dragStartX = 0;
+    this.dragStartY = 0;
+    this.popupStartX = 0;
+    this.popupStartY = 0;
+    
     this.initialize();
   }
 
@@ -163,8 +170,14 @@ class TranslationPopup {
     this.popup = document.createElement('div');
     this.popup.className = 'ai-translator-popup';
     
+    // Add drag handle
+    this.popup.innerHTML = `<div class="ai-translator-drag-handle"></div>`;
+    
     document.body.appendChild(this.popup);
     this.positionPopup(x, y);
+    
+    // Setup drag functionality
+    this.setupDragListeners();
   }
 
   positionPopup(x, y) {
@@ -193,10 +206,73 @@ class TranslationPopup {
     this.popup.style.top = `${posY}px`;
   }
 
+  setupDragListeners() {
+    const dragHandle = this.popup.querySelector('.ai-translator-drag-handle');
+    if (!dragHandle) return;
+    
+    dragHandle.addEventListener('mousedown', this.handleDragStart.bind(this));
+    document.addEventListener('mousemove', this.handleDragMove.bind(this));
+    document.addEventListener('mouseup', this.handleDragEnd.bind(this));
+  }
+
+  handleDragStart(event) {
+    event.preventDefault();
+    this.isDragging = true;
+    
+    // Get initial positions
+    const rect = this.popup.getBoundingClientRect();
+    this.popupStartX = rect.left;
+    this.popupStartY = rect.top;
+    this.dragStartX = event.clientX;
+    this.dragStartY = event.clientY;
+    
+    // Add dragging class for visual feedback
+    this.popup.classList.add('ai-translator-dragging');
+  }
+
+  handleDragMove(event) {
+    if (!this.isDragging || !this.popup) return;
+    
+    event.preventDefault();
+    
+    // Calculate new position
+    const deltaX = event.clientX - this.dragStartX;
+    const deltaY = event.clientY - this.dragStartY;
+    
+    let newX = this.popupStartX + deltaX;
+    let newY = this.popupStartY + deltaY;
+    
+    // Constrain to viewport
+    const rect = this.popup.getBoundingClientRect();
+    const margin = 10;
+    
+    newX = Math.max(margin, Math.min(newX, window.innerWidth - rect.width - margin));
+    newY = Math.max(margin, Math.min(newY, window.innerHeight - rect.height - margin));
+    
+    // Apply new position
+    this.popup.style.left = `${newX}px`;
+    this.popup.style.top = `${newY}px`;
+  }
+
+  handleDragEnd(event) {
+    if (!this.isDragging) return;
+    
+    this.isDragging = false;
+    
+    if (this.popup) {
+      this.popup.classList.remove('ai-translator-dragging');
+    }
+  }
+
   remove() {
     if (this.popup) {
+      // Clean up drag event listeners
+      document.removeEventListener('mousemove', this.handleDragMove.bind(this));
+      document.removeEventListener('mouseup', this.handleDragEnd.bind(this));
+      
       this.popup.remove();
       this.popup = null;
+      this.isDragging = false;
     }
   }
 
@@ -238,7 +314,16 @@ class TranslationPopup {
   updateContent(html) {
     if (!this.popup) return;
     
-    this.popup.innerHTML = html;
+    // Preserve drag handle and update content
+    this.popup.innerHTML = `
+      <div class="ai-translator-drag-handle"></div>
+      <div class="ai-translator-body">
+        ${html}
+      </div>
+    `;
+    
+    // Re-setup drag listeners since we recreated the drag handle
+    this.setupDragListeners();
     
     const closeBtn = this.popup.querySelector('.ai-translator-close');
     if (closeBtn) {

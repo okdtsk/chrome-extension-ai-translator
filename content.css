@@ -4,7 +4,7 @@
   border: 1px solid #e0e0e0;
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-  padding: 12px;
+  padding: 36px 12px 12px 12px;
   max-width: 400px;
   min-width: 250px;
   z-index: 999999;
@@ -132,4 +132,54 @@
 .ai-translator-btn-icon {
   font-size: 16px;
   line-height: 1;
+}
+
+.ai-translator-drag-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  background: #f5f5f5;
+  border-radius: 8px 8px 0 0;
+  cursor: move;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.ai-translator-drag-handle::after {
+  content: '';
+  width: 40px;
+  height: 4px;
+  background: #bbb;
+  border-radius: 2px;
+  display: block;
+}
+
+.ai-translator-drag-handle:hover {
+  background: #eeeeee;
+}
+
+.ai-translator-drag-handle:hover::after {
+  background: #999;
+}
+
+.ai-translator-body {
+  margin-top: 24px;
+}
+
+.ai-translator-popup.ai-translator-dragging {
+  opacity: 0.9;
+  transition: none;
+  cursor: move;
+}
+
+.ai-translator-popup.ai-translator-dragging .ai-translator-drag-handle {
+  background: #e0e0e0;
+}
+
+.ai-translator-popup.ai-translator-dragging .ai-translator-drag-handle::after {
+  background: #888;
 }
