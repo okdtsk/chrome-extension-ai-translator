@@ -186,6 +186,40 @@ class TranslationService {
     return new Error(ERROR_MESSAGES.GENERIC_ERROR);
   }
 
+  async callOllamaAPI(settings, messages) {
+    // Ollama expects a different format
+    const systemMessage = messages.find(m => m.role === 'system');
+    const userMessage = messages.find(m => m.role === 'user');
+    
+    const response = await fetch(settings.apiEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: settings.apiModel || 'llama2',
+        messages: messages,
+        stream: false,
+        options: {
+          temperature: 0.3
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Ollama API error (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+    
+    if (!data.message?.content) {
+      throw new Error(ERROR_MESSAGES.INVALID_RESPONSE);
+    }
+
+    return data.message.content;
+  }
+
   parseOpenAIError(errorData, status) {
     if (errorData.error) {
       const errorCode = errorData.error.code;
@@ -226,11 +260,14 @@ class TranslationService {
 
     const isGemini = settings.apiEndpoint.includes('generativelanguage.googleapis.com');
     const isClaude = settings.apiEndpoint.includes('anthropic.com');
+    const isOllama = settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('/api/chat');
     
     if (isGemini) {
       return await this.callGeminiAPI(settings, messages);
     } else if (isClaude) {
       return await this.callClaudeAPI(settings, messages);
+    } else if (isOllama) {
+      return await this.callOllamaAPI(settings, messages);
     } else {
       return await this.callOpenAIAPI(settings, messages);
     }

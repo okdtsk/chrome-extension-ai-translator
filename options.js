@@ -8,13 +8,15 @@ class OptionsManager {
     this.API_ENDPOINTS = {
       openai: 'https://api.openai.com/v1/chat/completions',
       gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
-      claude: 'https://api.anthropic.com/v1/messages'
+      claude: 'https://api.anthropic.com/v1/messages',
+      ollama: 'http://localhost:11434/api/chat'
     };
     
     this.DEFAULT_MODELS = {
       openai: 'gpt-3.5-turbo',
       gemini: 'gemini-pro',
-      claude: 'claude-3-haiku-20240307'
+      claude: 'claude-3-haiku-20240307',
+      ollama: 'llama2'
     };
     
     this.initialize();
@@ -68,6 +70,8 @@ class OptionsManager {
       document.getElementById('apiTypeGemini').checked = true;
     } else if (endpoint.includes('anthropic')) {
       document.getElementById('apiTypeClaude').checked = true;
+    } else if (endpoint.includes('localhost:11434') || endpoint.includes('/api/chat')) {
+      document.getElementById('apiTypeOllama').checked = true;
     } else {
       document.getElementById('apiTypeCustom').checked = true;
     }
@@ -93,6 +97,9 @@ class OptionsManager {
     } else if (apiType === 'claude') {
       this.apiEndpointInput.value = this.API_ENDPOINTS.claude;
       document.getElementById('apiModel').value = this.DEFAULT_MODELS.claude;
+    } else if (apiType === 'ollama') {
+      this.apiEndpointInput.value = this.API_ENDPOINTS.ollama;
+      document.getElementById('apiModel').value = this.DEFAULT_MODELS.ollama;
     }
   }
 
