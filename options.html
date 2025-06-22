@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>AI Translator Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <h1>AI Translator Settings</h1>
+    
+    <form id="settingsForm">
+      <div class="section">
+        <h2>General Settings</h2>
+        
+        <div class="form-group">
+          <label for="firstLanguage">First Language</label>
+          <select id="firstLanguage" name="firstLanguage">
+            <option value="Japanese">Japanese</option>
+            <option value="Chinese">Chinese</option>
+            <option value="Korean">Korean</option>
+            <option value="Spanish">Spanish</option>
+            <option value="French">French</option>
+            <option value="German">German</option>
+            <option value="Italian">Italian</option>
+            <option value="Portuguese">Portuguese</option>
+            <option value="Russian">Russian</option>
+            <option value="Arabic">Arabic</option>
+          </select>
+          <small>Primary language for translation. Text in this language will be translated to the second language.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="secondLanguage">Second Language</label>
+          <select id="secondLanguage" name="secondLanguage">
+            <option value="English">English</option>
+            <option value="Japanese">Japanese</option>
+            <option value="Chinese">Chinese</option>
+            <option value="Korean">Korean</option>
+            <option value="Spanish">Spanish</option>
+            <option value="French">French</option>
+            <option value="German">German</option>
+            <option value="Italian">Italian</option>
+            <option value="Portuguese">Portuguese</option>
+            <option value="Russian">Russian</option>
+            <option value="Arabic">Arabic</option>
+          </select>
+          <small>Target language when translating from the first language. Other languages will be translated to the first language.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="autoTranslate">
+            <input type="checkbox" id="autoTranslate" name="autoTranslate">
+            <span>Auto-translate on selection</span>
+          </label>
+          <small>Automatically translate text when selected, without requiring a button click.</small>
+        </div>
+
+      </div>
+
+      <div class="section">
+        <h2>API Configuration</h2>
+        
+        <div class="form-group">
+          <label>API Type</label>
+          <div class="radio-group">
+            <label class="radio-label">
+              <input type="radio" name="apiType" value="openai" id="apiTypeOpenAI">
+              <span>OpenAI</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="apiType" value="gemini" id="apiTypeGemini">
+              <span>Gemini</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="apiType" value="custom" id="apiTypeCustom">
+              <span>Custom</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="apiEndpoint">API Endpoint</label>
+          <input type="url" id="apiEndpoint" name="apiEndpoint" placeholder="https://api.openai.com/v1/chat/completions">
+          <small>The full URL of the API endpoint.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="apiKey">API Key</label>
+          <input type="password" id="apiKey" name="apiKey" placeholder="Enter your API key">
+          <small>Your API key for authentication. This is stored securely in Chrome's sync storage.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="apiModel">Model (Optional)</label>
+          <input type="text" id="apiModel" name="apiModel" placeholder="gpt-3.5-turbo">
+          <small>The model to use (e.g., gpt-3.5-turbo, gpt-4, gemini-pro).</small>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+        <div id="status" class="status"></div>
+      </div>
+    </form>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>

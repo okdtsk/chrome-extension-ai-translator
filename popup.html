@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>AI Translator</h1>
+    
+    <div class="status-section">
+      <div class="status-item">
+        <span class="label">Status:</span>
+        <span id="status" class="value">Active</span>
+      </div>
+      <div class="status-item">
+        <span class="label">First Language:</span>
+        <span id="firstLanguage" class="value">Loading...</span>
+      </div>
+      <div class="status-item">
+        <span class="label">API:</span>
+        <span id="apiType" class="value">Loading...</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Auto-translate:</span>
+        <span id="autoTranslate" class="value">Loading...</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="toggleExtension" class="btn btn-primary">
+        <span id="toggleText">Disable</span>
+      </button>
+      <button id="openOptions" class="btn btn-secondary">Settings</button>
+    </div>
+
+    <div class="footer">
+      <small>Select text on any page to translate</small>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
