@@ -73,6 +73,10 @@
               <span>Gemini</span>
             </label>
             <label class="radio-label">
+              <input type="radio" name="apiType" value="claude" id="apiTypeClaude">
+              <span>Claude</span>
+            </label>
+            <label class="radio-label">
               <input type="radio" name="apiType" value="custom" id="apiTypeCustom">
               <span>Custom</span>
             </label>
@@ -94,7 +98,7 @@
         <div class="form-group">
           <label for="apiModel">Model (Optional)</label>
           <input type="text" id="apiModel" name="apiModel" placeholder="gpt-3.5-turbo">
-          <small>The model to use (e.g., gpt-3.5-turbo, gpt-4, gemini-pro).</small>
+          <small>The model to use (e.g., gpt-3.5-turbo, gpt-4, gemini-pro, claude-3-haiku-20240307, claude-3-sonnet-20240229).</small>
         </div>
       </div>
 

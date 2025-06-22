@@ -7,12 +7,14 @@ class OptionsManager {
     
     this.API_ENDPOINTS = {
       openai: 'https://api.openai.com/v1/chat/completions',
-      gemini: 'https://generativelanguage.googleapis.com/v1beta/models'
+      gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
+      claude: 'https://api.anthropic.com/v1/messages'
     };
     
     this.DEFAULT_MODELS = {
       openai: 'gpt-3.5-turbo',
-      gemini: 'gemini-pro'
+      gemini: 'gemini-pro',
+      claude: 'claude-3-haiku-20240307'
     };
     
     this.initialize();
@@ -64,6 +66,8 @@ class OptionsManager {
       document.getElementById('apiTypeOpenAI').checked = true;
     } else if (endpoint.includes('generativelanguage.googleapis.com')) {
       document.getElementById('apiTypeGemini').checked = true;
+    } else if (endpoint.includes('anthropic')) {
+      document.getElementById('apiTypeClaude').checked = true;
     } else {
       document.getElementById('apiTypeCustom').checked = true;
     }
@@ -86,6 +90,9 @@ class OptionsManager {
     } else if (apiType === 'gemini') {
       this.apiEndpointInput.value = this.API_ENDPOINTS.gemini;
       document.getElementById('apiModel').value = this.DEFAULT_MODELS.gemini;
+    } else if (apiType === 'claude') {
+      this.apiEndpointInput.value = this.API_ENDPOINTS.claude;
+      document.getElementById('apiModel').value = this.DEFAULT_MODELS.claude;
     }
   }
 

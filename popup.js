@@ -67,6 +67,8 @@ class PopupManager {
       return 'OpenAI';
     } else if (apiEndpoint.includes('gemini') || apiEndpoint.includes('google')) {
       return 'Gemini';
+    } else if (apiEndpoint.includes('anthropic')) {
+      return 'Claude';
     } else {
       return 'Custom';
     }

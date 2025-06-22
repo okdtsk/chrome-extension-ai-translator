@@ -121,6 +121,71 @@ class TranslationService {
     return data.candidates[0].content.parts[0].text;
   }
 
+  async callClaudeAPI(settings, messages) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-api-key': settings.apiKey,
+      'anthropic-version': '2023-06-01'
+    };
+    
+    // Convert messages to Claude format
+    const systemMessage = messages.find(m => m.role === 'system');
+    const userMessages = messages.filter(m => m.role !== 'system');
+    
+    const response = await fetch(settings.apiEndpoint, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        model: settings.apiModel || 'claude-3-haiku-20240307',
+        messages: userMessages.map(m => ({
+          role: m.role === 'user' ? 'user' : 'assistant',
+          content: m.content
+        })),
+        system: systemMessage ? systemMessage.content : undefined,
+        max_tokens: 500,
+        temperature: 0.3
+      })
+    });
+
+    const responseData = await response.json();
+
+    if (!response.ok) {
+      throw this.parseClaudeError(responseData, response.status);
+    }
+
+    if (!responseData.content?.[0]?.text) {
+      throw new Error(ERROR_MESSAGES.INVALID_RESPONSE);
+    }
+
+    return responseData.content[0].text;
+  }
+
+  parseClaudeError(errorData, status) {
+    if (errorData.error) {
+      const errorType = errorData.error.type;
+      const errorMessage = errorData.error.message;
+      
+      switch (errorType) {
+        case 'rate_limit_error':
+          return new Error(`${ERROR_MESSAGES.RATE_LIMIT} ${errorMessage}`);
+        case 'authentication_error':
+          return new Error(ERROR_MESSAGES.AUTH_FAILED);
+        case 'invalid_request_error':
+          return new Error(`Invalid request: ${errorMessage}`);
+        default:
+          return new Error(`API Error: ${errorMessage || errorType}`);
+      }
+    }
+    
+    if (status === 401) {
+      return new Error(ERROR_MESSAGES.AUTH_FAILED);
+    } else if (status === 429) {
+      return new Error(ERROR_MESSAGES.RATE_LIMIT);
+    }
+    
+    return new Error(ERROR_MESSAGES.GENERIC_ERROR);
+  }
+
   parseOpenAIError(errorData, status) {
     if (errorData.error) {
       const errorCode = errorData.error.code;
@@ -160,9 +225,12 @@ class TranslationService {
     ];
 
     const isGemini = settings.apiEndpoint.includes('generativelanguage.googleapis.com');
+    const isClaude = settings.apiEndpoint.includes('anthropic.com');
     
     if (isGemini) {
       return await this.callGeminiAPI(settings, messages);
+    } else if (isClaude) {
+      return await this.callClaudeAPI(settings, messages);
     } else {
       return await this.callOpenAIAPI(settings, messages);
     }
