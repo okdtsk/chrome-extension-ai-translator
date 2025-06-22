@@ -7,6 +7,9 @@ class TranslationPopup {
     this.SELECTION_DELAY = 500;
     this.MIN_TEXT_LENGTH = 2;
     this.selectedText = '';
+    this.lastKeyTime = 0;
+    this.lastKey = '';
+    this.DOUBLE_KEY_TIMEOUT = 500; // ms between double key presses
     
     this.initialize();
   }
@@ -69,16 +72,13 @@ class TranslationPopup {
     this.selectedText = selectedText;
     
     this.selectionTimeout = setTimeout(() => {
-      this.create(selectionInfo.x, selectionInfo.y);
-      
       if (this.autoTranslate) {
         // Automatically start translation
+        this.create(selectionInfo.x, selectionInfo.y);
         this.updateContent(this.getLoadingHTML());
         this.translateText(this.selectedText);
-      } else {
-        // Show the translate button
-        this.showTranslateButton();
       }
+      // When auto-translate is off, don't show popup - wait for cmd+c+c
     }, this.SELECTION_DELAY);
   }
   
@@ -114,6 +114,46 @@ class TranslationPopup {
   handleKeyDown(event) {
     if (event.key === 'Escape') {
       this.remove();
+      return;
+    }
+    
+    // Check for cmd+c+c (Mac) or ctrl+c+c (Windows/Linux)
+    const isCmdOrCtrl = event.metaKey || event.ctrlKey;
+    
+    if (!this.isEnabled || this.autoTranslate) return;
+    
+    if (isCmdOrCtrl && event.key === 'c') {
+      const currentTime = Date.now();
+      
+      // Check if this is the second 'c' press within timeout
+      if (this.lastKey === 'c' && (currentTime - this.lastKeyTime) < this.DOUBLE_KEY_TIMEOUT) {
+        // Double cmd+c detected
+        const selection = window.getSelection();
+        const selectedText = selection.toString().trim();
+        
+        if (selectedText.length >= this.MIN_TEXT_LENGTH) {
+          // Get selection position
+          const selectionInfo = this.captureSelectionInfo(selection);
+          if (selectionInfo) {
+            this.selectedText = selectedText;
+            this.create(selectionInfo.x, selectionInfo.y);
+            this.updateContent(this.getLoadingHTML());
+            this.translateText(this.selectedText);
+          }
+        }
+        
+        // Reset after successful detection
+        this.lastKey = '';
+        this.lastKeyTime = 0;
+      } else {
+        // First 'c' press
+        this.lastKey = 'c';
+        this.lastKeyTime = currentTime;
+      }
+    } else {
+      // Reset if any other key is pressed
+      this.lastKey = '';
+      this.lastKeyTime = 0;
     }
   }
 

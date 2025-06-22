@@ -5,6 +5,7 @@ class PopupManager {
       firstLanguage: document.getElementById('firstLanguage'),
       apiType: document.getElementById('apiType'),
       autoTranslate: document.getElementById('autoTranslate'),
+      footerText: document.getElementById('footerText'),
       toggleBtn: document.getElementById('toggleExtension'),
       toggleText: document.getElementById('toggleText'),
       openOptionsBtn: document.getElementById('openOptions')
@@ -44,6 +45,13 @@ class PopupManager {
     
     // Update auto-translate status
     this.elements.autoTranslate.textContent = autoTranslate ? 'On' : 'Off';
+    
+    // Update footer text based on auto-translate setting
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const shortcut = isMac ? 'Cmd+C+C' : 'Ctrl+C+C';
+    this.elements.footerText.textContent = autoTranslate 
+      ? 'Select text on any page to translate'
+      : `Select text and press ${shortcut} to translate`;
 
     // Update toggle button
     this.elements.toggleText.textContent = enabled ? 'Disable' : 'Enable';
