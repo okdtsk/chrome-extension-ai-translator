@@ -4,7 +4,7 @@
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 12px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  padding: 36px 16px 16px 16px;
+  padding: 20px 16px 12px 16px;
   max-width: 320px;
   min-width: 200px;
   z-index: 999999;
@@ -146,19 +146,15 @@
 }
 
 .ai-translator-body {
-  margin-top: 24px;
+  margin-top: 0;
 }
 
 .ai-translator-popup.ai-translator-dragging {
-  opacity: 0.9;
+  opacity: 0.7;
   transition: none;
   cursor: move;
 }
 
-.ai-translator-popup.ai-translator-dragging .ai-translator-drag-handle {
-  background: #e0e0e0;
-}
-
 .ai-translator-popup.ai-translator-dragging .ai-translator-drag-handle::after {
-  background: #888;
+  background: #9ca3af;
 }
