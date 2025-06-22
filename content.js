@@ -340,7 +340,6 @@ class TranslationPopup {
       <div class="ai-translator-content">
         <div class="ai-translator-preview">${this.escapeHtml(truncatedText)}</div>
         <button class="ai-translator-translate-btn">
-          <span class="ai-translator-btn-icon">🌐</span>
           Translate
         </button>
         <div class="ai-translator-close">×</div>
@@ -360,7 +359,6 @@ class TranslationPopup {
   getErrorHTML(message) {
     return `
       <div class="ai-translator-error">
-        <span class="ai-translator-error-icon">⚠️</span>
         <span>${this.escapeHtml(message)}</span>
       </div>
     `;
