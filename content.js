@@ -250,14 +250,22 @@ class TranslationPopup {
     this.popup = document.createElement('div');
     this.popup.className = 'ai-translator-popup';
     
-    // Add drag handle
-    this.popup.innerHTML = `<div class="ai-translator-drag-handle"></div>`;
+    // Add header with drag handle and close button
+    this.popup.innerHTML = `
+      <div class="ai-translator-header">
+        <div class="ai-translator-drag-handle"></div>
+        <button class="ai-translator-close-btn" aria-label="Close">×</button>
+      </div>
+    `;
     
     document.body.appendChild(this.popup);
     this.positionPopup(x, y, selectionInfo);
     
     // Setup drag functionality
     this.setupDragListeners();
+    
+    // Setup close button
+    this.setupCloseButton();
   }
 
   positionPopup(x, y, selectionInfo = null) {
@@ -311,6 +319,16 @@ class TranslationPopup {
     dragHandle.addEventListener('mousedown', this.handleDragStart.bind(this));
     document.addEventListener('mousemove', this.handleDragMove.bind(this));
     document.addEventListener('mouseup', this.handleDragEnd.bind(this));
+  }
+
+  setupCloseButton() {
+    const closeBtn = this.popup.querySelector('.ai-translator-close-btn');
+    if (!closeBtn) return;
+    
+    closeBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.remove();
+    });
   }
 
   handleDragStart(event) {
@@ -407,17 +425,20 @@ class TranslationPopup {
   updateContent(html) {
     if (!this.popup) return;
     
-    // Preserve drag handle and update content
+    // Preserve header with drag handle and close button, update content
     this.popup.innerHTML = `
-      <div class="ai-translator-drag-handle"></div>
+      <div class="ai-translator-header">
+        <div class="ai-translator-drag-handle"></div>
+        <button class="ai-translator-close-btn" aria-label="Close">×</button>
+      </div>
       <div class="ai-translator-body">
         ${html}
       </div>
     `;
     
-    // Re-setup drag listeners since we recreated the drag handle
+    // Re-setup listeners since we recreated the elements
     this.setupDragListeners();
-    
+    this.setupCloseButton();
   }
 
   getTranslateButtonHTML() {

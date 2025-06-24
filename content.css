@@ -133,6 +133,14 @@
   line-height: 1;
 }
 
+.ai-translator-header {
+  position: relative;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .ai-translator-drag-handle {
   position: absolute;
   top: 0;
@@ -173,4 +181,35 @@
 
 .ai-translator-popup.ai-translator-dragging .ai-translator-drag-handle::after {
   background: #9ca3af;
+}
+
+.ai-translator-close-btn {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  font-size: 18px;
+  line-height: 1;
+  color: #9ca3af;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  z-index: 10;
+}
+
+.ai-translator-close-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #6b7280;
+}
+
+.ai-translator-close-btn:active {
+  background: rgba(0, 0, 0, 0.08);
+  color: #4b5563;
 }
