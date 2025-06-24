@@ -81,7 +81,7 @@ class TranslationPopup {
     this.selectionTimeout = setTimeout(() => {
       if (this.autoTranslate) {
         // Automatically start translation
-        this.create(selectionInfo.x, selectionInfo.y);
+        this.create(selectionInfo.x, selectionInfo.y, selectionInfo);
         this.updateContent(this.getLoadingHTML());
         this.translateText(this.selectedText);
       }
@@ -104,7 +104,9 @@ class TranslationPopup {
       
       return {
         x: rect.left + rect.width / 2,
-        y: rect.top + window.scrollY
+        y: rect.top + window.scrollY,
+        height: rect.height,
+        bottom: rect.bottom + window.scrollY
       };
     } catch (error) {
       return null;
@@ -143,7 +145,7 @@ class TranslationPopup {
           const selectionInfo = this.captureSelectionInfo(selection);
           if (selectionInfo) {
             this.selectedText = selectedText;
-            this.create(selectionInfo.x, selectionInfo.y);
+            this.create(selectionInfo.x, selectionInfo.y, selectionInfo);
             this.updateContent(this.getLoadingHTML());
             this.translateText(this.selectedText);
           }
@@ -164,7 +166,7 @@ class TranslationPopup {
     }
   }
 
-  create(x, y) {
+  create(x, y, selectionInfo = null) {
     this.remove();
     
     this.popup = document.createElement('div');
@@ -174,32 +176,50 @@ class TranslationPopup {
     this.popup.innerHTML = `<div class="ai-translator-drag-handle"></div>`;
     
     document.body.appendChild(this.popup);
-    this.positionPopup(x, y);
+    this.positionPopup(x, y, selectionInfo);
     
     // Setup drag functionality
     this.setupDragListeners();
   }
 
-  positionPopup(x, y) {
+  positionPopup(x, y, selectionInfo = null) {
     const rect = this.popup.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
     const margin = 10;
-    const offset = 20;
+    const minOffset = 10; // Minimum space between popup and selection
     
     let posX = x - rect.width / 2;
-    let posY = y + offset;
+    let posY;
+    
+    // Calculate vertical position to avoid overlap
+    if (selectionInfo && selectionInfo.height) {
+      // Position below the selection with extra offset based on selection height
+      posY = selectionInfo.bottom + minOffset;
+      
+      // If popup would go off screen, try positioning above
+      if (posY + rect.height > viewportHeight + window.scrollY - margin) {
+        posY = y - rect.height - minOffset;
+        
+        // If still overlapping when above, find the best position
+        if (posY < window.scrollY + margin) {
+          // Default to below with scrolling if needed
+          posY = selectionInfo.bottom + minOffset;
+        }
+      }
+    } else {
+      // Fallback to original behavior if no selection info
+      posY = y + 20;
+      if (posY + rect.height > viewportHeight + window.scrollY - margin) {
+        posY = y - rect.height - margin;
+      }
+    }
     
     // Adjust horizontal position
     if (posX < margin) {
       posX = margin;
     } else if (posX + rect.width > viewportWidth - margin) {
       posX = viewportWidth - rect.width - margin;
-    }
-    
-    // Adjust vertical position
-    if (posY + rect.height > viewportHeight - margin) {
-      posY = y - rect.height - margin;
     }
     
     this.popup.style.left = `${posX}px`;
