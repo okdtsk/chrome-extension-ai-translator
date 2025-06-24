@@ -76,14 +76,16 @@ class TranslationPopup {
       return;
     }
     
+    // Capture text with preserved structure
     this.selectedText = selectedText;
+    this.selectedTextWithBreaks = this.captureTextWithStructure(selection);
     
     this.selectionTimeout = setTimeout(() => {
       if (this.autoTranslate) {
         // Automatically start translation
         this.create(selectionInfo.x, selectionInfo.y, selectionInfo);
         this.updateContent(this.getLoadingHTML());
-        this.translateText(this.selectedText);
+        this.translateText(this.selectedTextWithBreaks);
       }
       // When auto-translate is off, don't show popup - wait for cmd+c+c
     }, this.SELECTION_DELAY);
@@ -110,6 +112,81 @@ class TranslationPopup {
       };
     } catch (error) {
       return null;
+    }
+  }
+
+  captureTextWithStructure(selection) {
+    if (!selection || selection.rangeCount === 0) {
+      return selection.toString();
+    }
+    
+    try {
+      const range = selection.getRangeAt(0);
+      const container = range.commonAncestorContainer;
+      
+      // Create a temporary div to extract HTML structure
+      const tempDiv = document.createElement('div');
+      const clonedContents = range.cloneContents();
+      tempDiv.appendChild(clonedContents);
+      
+      // Process the cloned content to extract text with paragraph breaks
+      const walker = document.createTreeWalker(
+        tempDiv,
+        NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
+        null,
+        false
+      );
+      
+      let textParts = [];
+      let currentParagraph = [];
+      let lastNode = null;
+      
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          // Check if this element causes a line break
+          const tagName = node.tagName?.toLowerCase();
+          const display = window.getComputedStyle(node).display;
+          
+          if (tagName === 'br' || 
+              tagName === 'p' || 
+              tagName === 'div' || 
+              tagName === 'h1' || 
+              tagName === 'h2' || 
+              tagName === 'h3' || 
+              tagName === 'h4' || 
+              tagName === 'h5' || 
+              tagName === 'h6' ||
+              tagName === 'li' ||
+              display === 'block') {
+            
+            if (currentParagraph.length > 0) {
+              textParts.push(currentParagraph.join(' ').trim());
+              currentParagraph = [];
+            }
+          }
+        } else if (node.nodeType === Node.TEXT_NODE) {
+          const text = node.textContent.trim();
+          if (text) {
+            currentParagraph.push(text);
+          }
+        }
+        
+        lastNode = node;
+      }
+      
+      // Add any remaining text
+      if (currentParagraph.length > 0) {
+        textParts.push(currentParagraph.join(' ').trim());
+      }
+      
+      // Join paragraphs with double line breaks to preserve structure
+      return textParts.filter(part => part.length > 0).join('\n\n');
+      
+    } catch (error) {
+      // Fallback to simple text extraction
+      return selection.toString();
     }
   }
 
@@ -145,9 +222,10 @@ class TranslationPopup {
           const selectionInfo = this.captureSelectionInfo(selection);
           if (selectionInfo) {
             this.selectedText = selectedText;
+            this.selectedTextWithBreaks = this.captureTextWithStructure(selection);
             this.create(selectionInfo.x, selectionInfo.y, selectionInfo);
             this.updateContent(this.getLoadingHTML());
-            this.translateText(this.selectedText);
+            this.translateText(this.selectedTextWithBreaks);
           }
         }
         
@@ -304,7 +382,7 @@ class TranslationPopup {
     if (translateBtn) {
       translateBtn.addEventListener('click', () => {
         this.updateContent(this.getLoadingHTML());
-        this.translateText(this.selectedText);
+        this.translateText(this.selectedTextWithBreaks || this.selectedText);
       });
     }
   }
@@ -377,7 +455,7 @@ class TranslationPopup {
   getSuccessHTML(translation) {
     return `
       <div class="ai-translator-content">
-        <div class="ai-translator-result">${this.escapeHtml(translation)}</div>
+        <div class="ai-translator-result">${this.formatTranslatedText(translation)}</div>
       </div>
     `;
   }
@@ -386,6 +464,18 @@ class TranslationPopup {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  formatTranslatedText(text) {
+    // First escape HTML to prevent XSS
+    const escaped = this.escapeHtml(text);
+    
+    // Convert line breaks to <br> tags for display
+    // Handle different line break patterns
+    return escaped
+      .replace(/\n\n/g, '</p><p>') // Double line breaks become paragraphs
+      .replace(/\n/g, '<br>') // Single line breaks become <br>
+      .replace(/^(.+)$/, '<p>$1</p>'); // Wrap in initial paragraph
   }
 }
 

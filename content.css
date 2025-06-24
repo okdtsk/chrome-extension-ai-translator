@@ -57,6 +57,22 @@
   padding: 8px 0;
   word-wrap: break-word;
   color: #1a1a1a;
+  white-space: pre-wrap;
+}
+
+.ai-translator-result p {
+  margin: 0 0 0.8em 0;
+  line-height: 1.6;
+}
+
+.ai-translator-result p:last-child {
+  margin-bottom: 0;
+}
+
+.ai-translator-result br {
+  display: block;
+  content: "";
+  margin: 0.4em 0;
 }
 
 
