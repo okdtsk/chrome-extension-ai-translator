@@ -5,10 +5,33 @@ const DEFAULT_SETTINGS = {
   secondLanguage: 'English',
   apiEndpoint: '',
   apiKey: '',
-  apiModel: 'gpt-3.5-turbo'
+  apiModel: 'gpt-3.5-turbo',
+  translationStyle: 'balanced' // literal, accurate, balanced, natural, creative
 };
 
-const SYSTEM_PROMPT = 'You are a translator. Detect the source language and translate the text accurately. Return ONLY the translated text itself. Do not include any labels, source language names, explanations, or any other text besides the translation.';
+const getSystemPrompt = (translationStyle) => {
+  const style = translationStyle || 'balanced';
+  
+  switch(style) {
+    case 'literal':
+      return 'You are a strict literal translator. Translate the text word-for-word, preserving the exact structure and meaning. Do not adjust for grammar or natural flow. Return ONLY the translated text itself.';
+    
+    case 'accurate':
+      return 'You are a precise translator. Translate accurately with minimal adjustments only for basic grammar. Preserve the original structure as much as possible. Return ONLY the translated text itself.';
+    
+    case 'balanced':
+      return 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Maintain the original meaning but adjust grammar and expressions for clarity. Return ONLY the translated text itself.';
+    
+    case 'natural':
+      return 'You are a natural translator. Translate with focus on natural expression in the target language. Adapt phrases and idioms while preserving the core meaning. Return ONLY the translated text itself.';
+    
+    case 'creative':
+      return 'You are a creative translator. Translate with significant interpretive freedom, fully adapting cultural references, idioms, and expressions to best convey the spirit and emotional impact in the target language. Return ONLY the translated text itself.';
+    
+    default:
+      return 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Return ONLY the translated text itself.';
+  }
+};
 
 const ERROR_MESSAGES = {
   NO_CONFIG: 'Please configure API settings in extension options',
@@ -250,7 +273,7 @@ class TranslationService {
     const messages = [
       {
         role: 'system',
-        content: SYSTEM_PROMPT
+        content: getSystemPrompt(settings.translationStyle)
       },
       {
         role: 'user',
@@ -277,11 +300,12 @@ class TranslationService {
     if (request.action !== 'translate') return false;
 
     // Get settings with defaults
-    const keys = ['apiEndpoint', 'apiKey', 'firstLanguage', 'secondLanguage', 'apiModel'];
+    const keys = ['apiEndpoint', 'apiKey', 'firstLanguage', 'secondLanguage', 'apiModel', 'translationStyle'];
     const defaults = {
       firstLanguage: DEFAULT_SETTINGS.firstLanguage,
       secondLanguage: DEFAULT_SETTINGS.secondLanguage,
-      apiModel: DEFAULT_SETTINGS.apiModel
+      apiModel: DEFAULT_SETTINGS.apiModel,
+      translationStyle: DEFAULT_SETTINGS.translationStyle
     };
     
     chrome.storage.sync.get(keys, async (result) => {

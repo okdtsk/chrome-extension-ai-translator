@@ -148,3 +148,58 @@ small {
 .status.error {
   color: #ea4335;
 }
+
+.translation-style-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.style-option {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.style-option:hover {
+  border-color: #1a73e8;
+  background-color: #f8f9fa;
+}
+
+.style-option input[type="radio"] {
+  margin-right: 12px;
+  margin-top: 2px;
+  cursor: pointer;
+}
+
+.style-content {
+  flex: 1;
+}
+
+.style-title {
+  display: block;
+  font-weight: 500;
+  color: #202124;
+  margin-bottom: 4px;
+}
+
+.style-description {
+  display: block;
+  color: #5f6368;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.style-option:has(input:checked) {
+  border-color: #1a73e8;
+  background-color: #e8f0fe;
+}
+
+.style-option:has(input:checked) .style-title {
+  color: #1a73e8;
+}

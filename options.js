@@ -34,7 +34,8 @@ class OptionsManager {
       'autoTranslate',
       'apiEndpoint',
       'apiKey',
-      'apiModel'
+      'apiModel',
+      'translationStyle'
     ]);
 
     this.populateForm(settings);
@@ -59,6 +60,13 @@ class OptionsManager {
     
     document.getElementById('apiModel').value = 
       settings.apiModel || '';
+    
+    // Set translation style radio button
+    const style = settings.translationStyle || 'balanced';
+    const styleRadio = document.querySelector(`input[name="translationStyle"][value="${style}"]`);
+    if (styleRadio) {
+      styleRadio.checked = true;
+    }
   }
 
   detectApiType(endpoint) {
@@ -130,7 +138,8 @@ class OptionsManager {
       autoTranslate: formData.get('autoTranslate') === 'on',
       apiEndpoint: formData.get('apiEndpoint'),
       apiKey: formData.get('apiKey'),
-      apiModel: formData.get('apiModel')
+      apiModel: formData.get('apiModel'),
+      translationStyle: formData.get('translationStyle')
     };
   }
 

@@ -56,6 +56,47 @@
           <small>When enabled: automatically translate text when selected. When disabled: use Cmd+C+C (Mac) or Ctrl+C+C (Windows/Linux) to translate selected text.</small>
         </div>
 
+        <div class="form-group">
+          <label>Translation Style</label>
+          <div class="translation-style-group">
+            <label class="style-option">
+              <input type="radio" name="translationStyle" value="literal" id="styleLiteral">
+              <div class="style-content">
+                <span class="style-title">Literal</span>
+                <small class="style-description">Word-for-word translation preserving exact structure</small>
+              </div>
+            </label>
+            <label class="style-option">
+              <input type="radio" name="translationStyle" value="accurate" id="styleAccurate">
+              <div class="style-content">
+                <span class="style-title">Accurate</span>
+                <small class="style-description">Precise translation with minimal adjustments for grammar</small>
+              </div>
+            </label>
+            <label class="style-option">
+              <input type="radio" name="translationStyle" value="balanced" id="styleBalanced" checked>
+              <div class="style-content">
+                <span class="style-title">Balanced</span>
+                <small class="style-description">Natural-sounding translation maintaining original meaning</small>
+              </div>
+            </label>
+            <label class="style-option">
+              <input type="radio" name="translationStyle" value="natural" id="styleNatural">
+              <div class="style-content">
+                <span class="style-title">Natural</span>
+                <small class="style-description">Fluent translation adapting phrases and idioms</small>
+              </div>
+            </label>
+            <label class="style-option">
+              <input type="radio" name="translationStyle" value="creative" id="styleCreative">
+              <div class="style-content">
+                <span class="style-title">Creative</span>
+                <small class="style-description">Free interpretation focusing on spirit and impact</small>
+              </div>
+            </label>
+          </div>
+        </div>
+
       </div>
 
       <div class="section">
