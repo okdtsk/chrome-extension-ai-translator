@@ -4,10 +4,239 @@ const DEFAULT_SETTINGS = {
   firstLanguage: 'Japanese',
   secondLanguage: 'English',
   apiEndpoint: '',
-  apiKey: '',
   apiModel: 'gpt-3.5-turbo',
   translationStyle: 'balanced' // literal, accurate, balanced, natural, creative
 };
+
+// Encrypted storage manager for sensitive data using Web Crypto API
+class EncryptedStorageManager {
+  constructor() {
+    this.algorithm = 'AES-GCM';
+    this.keyUsages = ['encrypt', 'decrypt'];
+    this.saltKey = 'ai_translator_salt';
+    this.ivKey = 'ai_translator_iv';
+  }
+
+  // Generate a cryptographic key from the extension's unique ID
+  async generateKey() {
+    // Use a combination of extension ID and a fixed salt for key derivation
+    const encoder = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(chrome.runtime.id + 'AITranslatorExtension2024'),
+      { name: 'PBKDF2' },
+      false,
+      ['deriveBits', 'deriveKey']
+    );
+
+    // Get or generate salt
+    let salt = await this.getSalt();
+    if (!salt) {
+      salt = crypto.getRandomValues(new Uint8Array(16));
+      await this.saveSalt(salt);
+    }
+
+    // Derive key using PBKDF2
+    const key = await crypto.subtle.deriveKey(
+      {
+        name: 'PBKDF2',
+        salt: salt,
+        iterations: 100000,
+        hash: 'SHA-256'
+      },
+      keyMaterial,
+      { name: this.algorithm, length: 256 },
+      true,
+      this.keyUsages
+    );
+
+    return key;
+  }
+
+  async getSalt() {
+    const result = await chrome.storage.local.get(this.saltKey);
+    if (result[this.saltKey]) {
+      return new Uint8Array(result[this.saltKey]);
+    }
+    return null;
+  }
+
+  async saveSalt(salt) {
+    await chrome.storage.local.set({
+      [this.saltKey]: Array.from(salt)
+    });
+  }
+
+  // Encrypt data
+  async encrypt(data) {
+    try {
+      const key = await this.generateKey();
+      const encoder = new TextEncoder();
+      const encodedData = encoder.encode(data);
+      
+      // Generate random IV for each encryption
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      
+      const encryptedData = await crypto.subtle.encrypt(
+        {
+          name: this.algorithm,
+          iv: iv
+        },
+        key,
+        encodedData
+      );
+
+      // Return encrypted data with IV
+      return {
+        data: Array.from(new Uint8Array(encryptedData)),
+        iv: Array.from(iv)
+      };
+    } catch (error) {
+      console.error('Encryption failed:', error);
+      throw new Error('Failed to encrypt data');
+    }
+  }
+
+  // Decrypt data
+  async decrypt(encryptedObj) {
+    try {
+      const key = await this.generateKey();
+      const encryptedData = new Uint8Array(encryptedObj.data);
+      const iv = new Uint8Array(encryptedObj.iv);
+      
+      const decryptedData = await crypto.subtle.decrypt(
+        {
+          name: this.algorithm,
+          iv: iv
+        },
+        key,
+        encryptedData
+      );
+
+      const decoder = new TextDecoder();
+      return decoder.decode(decryptedData);
+    } catch (error) {
+      console.error('Decryption failed:', error);
+      throw new Error('Failed to decrypt data');
+    }
+  }
+
+  // Store encrypted API key
+  async storeApiKey(provider, apiKey) {
+    if (!apiKey) {
+      await chrome.storage.local.remove(`encrypted_api_key_${provider}`);
+      return;
+    }
+
+    const encrypted = await this.encrypt(apiKey);
+    await chrome.storage.local.set({
+      [`encrypted_api_key_${provider}`]: encrypted
+    });
+  }
+
+  // Retrieve and decrypt API key
+  async getApiKey(provider) {
+    const result = await chrome.storage.local.get(`encrypted_api_key_${provider}`);
+    const encryptedData = result[`encrypted_api_key_${provider}`];
+    
+    if (!encryptedData) {
+      return null;
+    }
+
+    try {
+      return await this.decrypt(encryptedData);
+    } catch (error) {
+      console.error('Failed to decrypt API key:', error);
+      // If decryption fails, remove the corrupted data
+      await chrome.storage.local.remove(`encrypted_api_key_${provider}`);
+      return null;
+    }
+  }
+
+  // Check if API key exists
+  async hasApiKey(provider) {
+    const result = await chrome.storage.local.get(`encrypted_api_key_${provider}`);
+    return !!result[`encrypted_api_key_${provider}`];
+  }
+
+  // Clear all encrypted data
+  async clearAll() {
+    const keys = await chrome.storage.local.get(null);
+    const encryptedKeys = Object.keys(keys).filter(key => key.startsWith('encrypted_api_key_'));
+    await chrome.storage.local.remove(encryptedKeys);
+  }
+
+  // Migrate from sync storage (one-time operation)
+  async migrateFromSyncStorage() {
+    const result = await chrome.storage.sync.get(['apiKey', 'apiEndpoint']);
+    if (result.apiKey) {
+      // Determine provider from endpoint
+      let provider = 'default';
+      
+      if (result.apiEndpoint) {
+        if (result.apiEndpoint.includes('openai')) {
+          provider = 'openai';
+        } else if (result.apiEndpoint.includes('generativelanguage.googleapis.com')) {
+          provider = 'gemini';
+        } else if (result.apiEndpoint.includes('anthropic')) {
+          provider = 'claude';
+        } else if (result.apiEndpoint.includes('localhost:11434') || result.apiEndpoint.includes('/api/chat')) {
+          provider = 'ollama';
+        }
+      }
+      
+      // Store encrypted in local storage
+      await this.storeApiKey(provider, result.apiKey);
+      
+      // Remove from sync storage
+      await chrome.storage.sync.remove(['apiKey']);
+      
+      return true; // Migration successful
+    }
+    return false; // No migration needed
+  }
+
+  // Get all non-sensitive settings from sync storage
+  async getNonSensitiveSettings() {
+    const settings = await chrome.storage.sync.get([
+      'enabled',
+      'firstLanguage',
+      'secondLanguage',
+      'apiEndpoint',
+      'apiModel',
+      'autoTranslate',
+      'translationStyle'
+    ]);
+    return settings;
+  }
+
+  // Save non-sensitive settings to sync storage
+  async saveNonSensitiveSettings(settings) {
+    // Remove API key from settings before saving
+    const { apiKey, ...nonSensitiveSettings } = settings;
+    await chrome.storage.sync.set(nonSensitiveSettings);
+  }
+}
+
+// Initialize encrypted storage
+let encryptedStorage = null;
+
+async function initializeEncryptedStorage() {
+  try {
+    encryptedStorage = new EncryptedStorageManager();
+    
+    // Check if migration is needed
+    const migrated = await encryptedStorage.migrateFromSyncStorage();
+    if (migrated) {
+      console.log('API key migrated to encrypted storage');
+    }
+    
+    return encryptedStorage;
+  } catch (error) {
+    console.error('Failed to initialize encrypted storage:', error);
+    throw error;
+  }
+}
 
 const getSystemPrompt = (translationStyle) => {
   const style = translationStyle || 'balanced';
@@ -52,30 +281,36 @@ class TranslationService {
   async initializeSettings() {
     // Initialize settings on every startup
     try {
-      const result = await chrome.storage.sync.get(Object.keys(DEFAULT_SETTINGS));
+      if (!encryptedStorage) {
+        await initializeEncryptedStorage();
+      }
+      
+      const result = await encryptedStorage.getNonSensitiveSettings();
       const settings = { ...DEFAULT_SETTINGS, ...result };
       
-      // Only update storage if there are missing keys
-      const missingKeys = Object.keys(DEFAULT_SETTINGS).filter(key => !(key in result));
+      // Only update storage if there are missing keys (excluding apiKey)
+      const missingKeys = Object.keys(DEFAULT_SETTINGS).filter(key => key !== 'apiKey' && !(key in result));
       if (missingKeys.length > 0) {
-        await chrome.storage.sync.set(settings);
+        await encryptedStorage.saveNonSensitiveSettings(settings);
       }
     } catch (error) {
       console.error('Failed to initialize settings:', error);
       // Fallback to defaults if storage fails
-      await chrome.storage.sync.set(DEFAULT_SETTINGS);
+      const { apiKey, ...nonSensitiveDefaults } = DEFAULT_SETTINGS;
+      await chrome.storage.sync.set(nonSensitiveDefaults);
     }
     
     // Also handle fresh installs
     chrome.runtime.onInstalled.addListener(async () => {
-      await chrome.storage.sync.set(DEFAULT_SETTINGS);
+      const { apiKey, ...nonSensitiveDefaults } = DEFAULT_SETTINGS;
+      await chrome.storage.sync.set(nonSensitiveDefaults);
     });
   }
 
   async callOpenAIAPI(settings, messages) {
     const headers = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${settings.apiKey}`
+      'Authorization': `Bearer ${settings.apiKey || ''}`
     };
     
     if (settings.organizationId) {
@@ -107,7 +342,7 @@ class TranslationService {
   }
 
   async callGeminiAPI(settings, messages) {
-    const apiKey = settings.apiKey;
+    const apiKey = settings.apiKey || '';
     const model = settings.apiModel || 'gemini-pro';
     const url = `${settings.apiEndpoint}/${model}:generateContent?key=${apiKey}`;
 
@@ -148,7 +383,7 @@ class TranslationService {
   async callClaudeAPI(settings, messages) {
     const headers = {
       'Content-Type': 'application/json',
-      'x-api-key': settings.apiKey,
+      'x-api-key': settings.apiKey || '',
       'anthropic-version': '2023-06-01'
     };
     
@@ -301,7 +536,7 @@ class TranslationService {
     if (request.action !== 'translate') return false;
 
     // Get settings with defaults
-    const keys = ['apiEndpoint', 'apiKey', 'firstLanguage', 'secondLanguage', 'apiModel', 'translationStyle'];
+    const keys = ['apiEndpoint', 'firstLanguage', 'secondLanguage', 'apiModel', 'translationStyle'];
     const defaults = {
       firstLanguage: DEFAULT_SETTINGS.firstLanguage,
       secondLanguage: DEFAULT_SETTINGS.secondLanguage,
@@ -311,6 +546,12 @@ class TranslationService {
     
     chrome.storage.sync.get(keys, async (result) => {
       const settings = { ...defaults, ...result };
+      
+      // Get API key from encrypted storage
+      if (encryptedStorage) {
+        const provider = this.detectProvider(settings.apiEndpoint);
+        settings.apiKey = await encryptedStorage.getApiKey(provider);
+      }
       
       if (!settings.apiEndpoint || !settings.apiKey) {
         sendResponse({ error: ERROR_MESSAGES.NO_CONFIG });
@@ -333,12 +574,62 @@ class TranslationService {
 
     return true; // Will respond asynchronously
   }
+  
+  detectProvider(endpoint) {
+    if (!endpoint) return 'default';
+    
+    if (endpoint.includes('openai')) {
+      return 'openai';
+    } else if (endpoint.includes('generativelanguage.googleapis.com')) {
+      return 'gemini';
+    } else if (endpoint.includes('anthropic')) {
+      return 'claude';
+    } else if (endpoint.includes('localhost:11434') || endpoint.includes('/api/chat')) {
+      return 'ollama';
+    }
+    
+    return 'default';
+  }
+  
 }
 
 // Initialize the service
-const translationService = new TranslationService();
+let translationService = null;
+
+// Initialize everything when the background script starts
+(async () => {
+  await initializeEncryptedStorage();
+  translationService = new TranslationService();
+})();
 
 // Set up message listener
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  return translationService.handleTranslationRequest(request, sender, sendResponse);
+  if (request.action === 'storeApiKey') {
+    // Handle API key storage
+    if (encryptedStorage) {
+      encryptedStorage.storeApiKey(request.provider, request.apiKey).then(() => {
+        sendResponse({ success: true });
+      }).catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
+    } else {
+      sendResponse({ success: false, error: 'Encrypted storage not initialized' });
+    }
+    return true;
+  } else if (request.action === 'checkApiKey') {
+    // Check if API key exists
+    if (encryptedStorage) {
+      encryptedStorage.hasApiKey(request.provider).then(hasKey => {
+        sendResponse({ hasApiKey: hasKey });
+      });
+    } else {
+      sendResponse({ hasApiKey: false });
+    }
+    return true;
+  } else if (translationService) {
+    return translationService.handleTranslationRequest(request, sender, sendResponse);
+  }
+  
+  return false;
 });
+

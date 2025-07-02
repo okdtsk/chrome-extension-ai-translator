@@ -1,3 +1,6 @@
+// Note about API key handling
+const API_KEY_NOTE = 'Your API key is encrypted and stored locally on this device. It is not synced across devices for security reasons.';
+
 class OptionsManager {
   constructor() {
     this.form = document.getElementById('settingsForm');
@@ -33,13 +36,20 @@ class OptionsManager {
       'secondLanguage',
       'autoTranslate',
       'apiEndpoint',
-      'apiKey',
       'apiModel',
       'translationStyle'
     ]);
 
     this.populateForm(settings);
     this.detectApiType(settings.apiEndpoint);
+    
+    // Show note about API key storage
+    this.showApiKeyNote();
+    
+    // Check if API key exists
+    if (settings.apiEndpoint) {
+      this.checkApiKeyStatus(settings.apiEndpoint);
+    }
   }
 
   populateForm(settings) {
@@ -55,8 +65,9 @@ class OptionsManager {
     document.getElementById('apiEndpoint').value = 
       settings.apiEndpoint || '';
     
-    document.getElementById('apiKey').value = 
-      settings.apiKey || '';
+    // API key is stored encrypted, so we can't display it
+    document.getElementById('apiKey').value = '';
+    document.getElementById('apiKey').placeholder = 'Enter API key (stored encrypted)';
     
     document.getElementById('apiModel').value = 
       settings.apiModel || '';
@@ -122,8 +133,30 @@ class OptionsManager {
     }
 
     try {
-      await chrome.storage.sync.set(settings);
-      this.showStatus('Settings saved successfully!', 'success');
+      // Extract API key before saving
+      const { apiKey, ...nonSensitiveSettings } = settings;
+      
+      // Save non-sensitive settings to sync storage
+      await chrome.storage.sync.set(nonSensitiveSettings);
+      
+      // If API key was provided, send it to background script
+      if (apiKey) {
+        const provider = this.detectProviderFromEndpoint(settings.apiEndpoint);
+        const response = await chrome.runtime.sendMessage({
+          action: 'storeApiKey',
+          provider: provider,
+          apiKey: apiKey,
+          skipPrompt: false
+        });
+        
+        if (response.success) {
+          this.showStatus('Settings saved successfully! API key encrypted and stored.', 'success');
+        } else {
+          this.showStatus('Settings saved but failed to encrypt API key', 'warning');
+        }
+      } else {
+        this.showStatus('Settings saved successfully!', 'success');
+      }
     } catch (error) {
       this.showStatus('Failed to save settings', 'error');
     }
@@ -144,7 +177,7 @@ class OptionsManager {
   }
 
   validateSettings(settings) {
-    return settings.apiEndpoint && settings.apiKey;
+    return settings.apiEndpoint; // API key is now optional in settings
   }
 
   showStatus(message, type) {
@@ -155,6 +188,59 @@ class OptionsManager {
       this.statusDiv.textContent = '';
       this.statusDiv.className = 'status';
     }, 3000);
+  }
+  
+  showApiKeyNote() {
+    const apiKeyGroup = document.getElementById('apiKey').parentElement;
+    const noteDiv = document.createElement('div');
+    noteDiv.className = 'info-note';
+    noteDiv.textContent = API_KEY_NOTE;
+    apiKeyGroup.appendChild(noteDiv);
+  }
+  
+  detectProviderFromEndpoint(endpoint) {
+    if (!endpoint) return 'default';
+    
+    if (endpoint.includes('openai')) {
+      return 'openai';
+    } else if (endpoint.includes('generativelanguage.googleapis.com')) {
+      return 'gemini';
+    } else if (endpoint.includes('anthropic')) {
+      return 'claude';
+    } else if (endpoint.includes('localhost:11434') || endpoint.includes('/api/chat')) {
+      return 'ollama';
+    }
+    
+    return 'default';
+  }
+  
+  async checkApiKeyStatus(endpoint) {
+    const provider = this.detectProviderFromEndpoint(endpoint);
+    
+    // Send message to background to check if API key exists
+    chrome.runtime.sendMessage({
+      action: 'checkApiKey',
+      provider: provider
+    }, (response) => {
+      if (response && response.hasApiKey) {
+        const apiKeyInput = document.getElementById('apiKey');
+        apiKeyInput.placeholder = 'API key is already saved (enter new key to update)';
+        
+        // Add a visual indicator
+        const indicator = document.createElement('div');
+        indicator.className = 'api-key-status';
+        indicator.textContent = '✓ API key is saved';
+        indicator.style.color = '#2e7d32';
+        indicator.style.fontSize = '12px';
+        indicator.style.marginTop = '4px';
+        
+        const existingIndicator = apiKeyInput.parentElement.querySelector('.api-key-status');
+        if (existingIndicator) {
+          existingIndicator.remove();
+        }
+        apiKeyInput.parentElement.appendChild(indicator);
+      }
+    });
   }
 }
 
