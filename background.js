@@ -166,9 +166,9 @@ class EncryptedStorageManager {
     await chrome.storage.local.remove(encryptedKeys);
   }
 
-  // Migrate from sync storage (one-time operation)
+  // Migrate from local storage (one-time operation)
   async migrateFromSyncStorage() {
-    const result = await chrome.storage.sync.get(['apiKey', 'apiEndpoint']);
+    const result = await chrome.storage.local.get(['apiKey', 'apiEndpoint']);
     if (result.apiKey) {
       // Determine provider from endpoint
       let provider = 'default';
@@ -188,17 +188,17 @@ class EncryptedStorageManager {
       // Store encrypted in local storage
       await this.storeApiKey(provider, result.apiKey);
       
-      // Remove from sync storage
-      await chrome.storage.sync.remove(['apiKey']);
+      // Remove from local storage
+      await chrome.storage.local.remove(['apiKey']);
       
       return true; // Migration successful
     }
     return false; // No migration needed
   }
 
-  // Get all non-sensitive settings from sync storage
+  // Get all non-sensitive settings from local storage
   async getNonSensitiveSettings() {
-    const settings = await chrome.storage.sync.get([
+    const settings = await chrome.storage.local.get([
       'enabled',
       'firstLanguage',
       'secondLanguage',
@@ -210,11 +210,11 @@ class EncryptedStorageManager {
     return settings;
   }
 
-  // Save non-sensitive settings to sync storage
+  // Save non-sensitive settings to local storage
   async saveNonSensitiveSettings(settings) {
     // Remove API key from settings before saving
     const { apiKey, ...nonSensitiveSettings } = settings;
-    await chrome.storage.sync.set(nonSensitiveSettings);
+    await chrome.storage.local.set(nonSensitiveSettings);
   }
 }
 
@@ -297,13 +297,13 @@ class TranslationService {
       console.error('Failed to initialize settings:', error);
       // Fallback to defaults if storage fails
       const { apiKey, ...nonSensitiveDefaults } = DEFAULT_SETTINGS;
-      await chrome.storage.sync.set(nonSensitiveDefaults);
+      await chrome.storage.local.set(nonSensitiveDefaults);
     }
     
     // Also handle fresh installs
     chrome.runtime.onInstalled.addListener(async () => {
       const { apiKey, ...nonSensitiveDefaults } = DEFAULT_SETTINGS;
-      await chrome.storage.sync.set(nonSensitiveDefaults);
+      await chrome.storage.local.set(nonSensitiveDefaults);
     });
   }
 
@@ -544,7 +544,7 @@ class TranslationService {
       translationStyle: DEFAULT_SETTINGS.translationStyle
     };
     
-    chrome.storage.sync.get(keys, async (result) => {
+    chrome.storage.local.get(keys, async (result) => {
       const settings = { ...defaults, ...result };
       
       // Get API key from encrypted storage

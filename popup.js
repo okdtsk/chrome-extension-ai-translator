@@ -20,7 +20,7 @@ class PopupManager {
   }
 
   async loadStatus() {
-    const settings = await chrome.storage.sync.get([
+    const settings = await chrome.storage.local.get([
       'enabled', 
       'firstLanguage',
       'autoTranslate',
@@ -82,8 +82,8 @@ class PopupManager {
   }
 
   async handleToggle() {
-    const { enabled = true } = await chrome.storage.sync.get('enabled');
-    await chrome.storage.sync.set({ enabled: !enabled });
+    const { enabled = true } = await chrome.storage.local.get('enabled');
+    await chrome.storage.local.set({ enabled: !enabled });
     await this.loadStatus();
   }
 

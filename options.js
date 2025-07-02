@@ -31,7 +31,7 @@ class OptionsManager {
   }
 
   async loadSettings() {
-    const settings = await chrome.storage.sync.get([
+    const settings = await chrome.storage.local.get([
       'firstLanguage',
       'secondLanguage',
       'autoTranslate',
@@ -136,8 +136,8 @@ class OptionsManager {
       // Extract API key before saving
       const { apiKey, ...nonSensitiveSettings } = settings;
       
-      // Save non-sensitive settings to sync storage
-      await chrome.storage.sync.set(nonSensitiveSettings);
+      // Save non-sensitive settings to local storage
+      await chrome.storage.local.set(nonSensitiveSettings);
       
       // If API key was provided, send it to background script
       if (apiKey) {

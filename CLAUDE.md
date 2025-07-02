@@ -70,17 +70,19 @@ The extension detects API type by URL pattern:
 - Ollama: Contains "localhost:11434" or "/api/chat"
 
 ### Storage Structure
-Settings stored in Chrome Storage Sync:
+Settings stored in Chrome Storage Local:
 ```javascript
 {
   enabled: boolean,
   firstLanguage: string,
   secondLanguage: string,
   apiEndpoint: string,
-  apiKey: string,
   apiModel: string,
-  autoTranslate: boolean
+  autoTranslate: boolean,
+  translationStyle: string
 }
+// API keys are stored separately with encryption:
+// encrypted_api_key_[provider]: { data: number[], iv: number[] }
 ```
 
 ## Key Implementation Details
@@ -88,7 +90,7 @@ Settings stored in Chrome Storage Sync:
 - **Manifest V3**: Uses service workers instead of background pages
 - **No Dependencies**: Pure vanilla JavaScript, no npm packages
 - **Error Handling**: Comprehensive error messages for different API failures
-- **Security**: API keys stored in Chrome's secure sync storage
+- **Security**: API keys encrypted with Web Crypto API and stored in Chrome's local storage
 - **Keyboard Shortcut**: Cmd+C+C (Mac) or Ctrl+C+C (Windows/Linux) for manual translation
 - **Auto-positioning**: Popup appears near selected text with smart viewport detection
 

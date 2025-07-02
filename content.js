@@ -28,7 +28,7 @@ class TranslationPopup {
   }
 
   async loadSettings() {
-    const { enabled = true, autoTranslate = false } = await chrome.storage.sync.get(['enabled', 'autoTranslate']);
+    const { enabled = true, autoTranslate = false } = await chrome.storage.local.get(['enabled', 'autoTranslate']);
     this.isEnabled = enabled;
     this.autoTranslate = autoTranslate;
   }
