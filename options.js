@@ -37,7 +37,8 @@ class OptionsManager {
       'autoTranslate',
       'apiEndpoint',
       'apiModel',
-      'translationStyle'
+      'translationStyle',
+      'popupWidth'
     ]);
 
     this.populateForm(settings);
@@ -77,6 +78,13 @@ class OptionsManager {
     const styleRadio = document.querySelector(`input[name="translationStyle"][value="${style}"]`);
     if (styleRadio) {
       styleRadio.checked = true;
+    }
+
+    // Set popup width radio button
+    const width = settings.popupWidth || 'medium';
+    const widthRadio = document.querySelector(`input[name="popupWidth"][value="${width}"]`);
+    if (widthRadio) {
+      widthRadio.checked = true;
     }
   }
 
@@ -172,7 +180,8 @@ class OptionsManager {
       apiEndpoint: formData.get('apiEndpoint'),
       apiKey: formData.get('apiKey'),
       apiModel: formData.get('apiModel'),
-      translationStyle: formData.get('translationStyle')
+      translationStyle: formData.get('translationStyle'),
+      popupWidth: formData.get('popupWidth')
     };
   }
 

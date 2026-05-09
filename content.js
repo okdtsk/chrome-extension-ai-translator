@@ -4,6 +4,7 @@ class TranslationPopup {
     this.selectionTimeout = null;
     this.isEnabled = true;
     this.autoTranslate = false;
+    this.popupWidth = 'medium';
     this.SELECTION_DELAY = 500;
     this.MIN_TEXT_LENGTH = 2;
     this.selectedText = '';
@@ -28,9 +29,11 @@ class TranslationPopup {
   }
 
   async loadSettings() {
-    const { enabled = true, autoTranslate = false } = await chrome.storage.local.get(['enabled', 'autoTranslate']);
+    const { enabled = true, autoTranslate = false, popupWidth = 'medium' } =
+      await chrome.storage.local.get(['enabled', 'autoTranslate', 'popupWidth']);
     this.isEnabled = enabled;
     this.autoTranslate = autoTranslate;
+    this.popupWidth = popupWidth;
   }
 
   setupStorageListener() {
@@ -43,6 +46,10 @@ class TranslationPopup {
       }
       if (changes.autoTranslate) {
         this.autoTranslate = changes.autoTranslate.newValue;
+      }
+      if (changes.popupWidth) {
+        this.popupWidth = changes.popupWidth.newValue;
+        this.applyWidthClass();
       }
     });
   }
@@ -249,6 +256,7 @@ class TranslationPopup {
     
     this.popup = document.createElement('div');
     this.popup.className = 'ai-translator-popup';
+    this.applyWidthClass();
     
     // Add header with drag handle and close button
     this.popup.innerHTML = `
@@ -378,6 +386,16 @@ class TranslationPopup {
     if (this.popup) {
       this.popup.classList.remove('ai-translator-dragging');
     }
+  }
+
+  applyWidthClass() {
+    if (!this.popup) return;
+    this.popup.classList.remove(
+      'ai-translator-width-narrow',
+      'ai-translator-width-medium',
+      'ai-translator-width-wide'
+    );
+    this.popup.classList.add(`ai-translator-width-${this.popupWidth}`);
   }
 
   remove() {

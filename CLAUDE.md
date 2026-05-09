@@ -79,7 +79,8 @@ Settings stored in Chrome Storage Local:
   apiEndpoint: string,
   apiModel: string,
   autoTranslate: boolean,
-  translationStyle: string
+  translationStyle: string,
+  popupWidth: string  // 'narrow' | 'medium' | 'wide'
 }
 // API keys are stored separately with encryption:
 // encrypted_api_key_[provider]: { data: number[], iv: number[] }
