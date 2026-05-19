@@ -467,25 +467,57 @@ class TranslationPopup {
     }
   }
 
-  async translateText(text, { retry = false } = {}) {
+  translateText(text, { retry = false } = {}) {
+    // Open a fresh port per translation. Background streams deltas back; we
+    // accumulate them into currentTranslation and re-render the popup body.
+    let port;
     try {
-      const response = await chrome.runtime.sendMessage({
-        action: 'translate',
-        text: text,
-        swap: this.swapDirection,
-        retry: retry
-      });
-
-      if (response.error) {
-        this.currentTranslation = '';
-        this.updateContent(this.getErrorHTML(response.error));
-      } else {
-        this.currentTranslation = response.translation || '';
-        this.updateContent(this.getSuccessHTML(response.translation));
-      }
+      port = chrome.runtime.connect({ name: 'translate' });
     } catch (error) {
       this.currentTranslation = '';
       this.updateContent(this.getErrorHTML('Unable to connect to translation service'));
+      return;
+    }
+
+    let accumulated = '';
+    let finished = false;
+
+    port.onMessage.addListener((msg) => {
+      if (!msg || !this.popup) return;
+      if (msg.type === 'delta' && typeof msg.text === 'string') {
+        accumulated += msg.text;
+        this.currentTranslation = accumulated;
+        this.updateContent(this.getStreamingHTML(accumulated));
+      } else if (msg.type === 'done') {
+        finished = true;
+        this.currentTranslation = msg.translation || accumulated;
+        this.updateContent(this.getSuccessHTML(this.currentTranslation));
+      } else if (msg.type === 'cached') {
+        finished = true;
+        this.currentTranslation = msg.translation || '';
+        this.updateContent(this.getSuccessHTML(this.currentTranslation));
+      } else if (msg.type === 'error') {
+        finished = true;
+        this.currentTranslation = '';
+        this.updateContent(this.getErrorHTML(msg.error || 'Translation failed'));
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (finished || !this.popup) return;
+      if (accumulated) {
+        // Stream cut off mid-flight — show what we have.
+        this.currentTranslation = accumulated;
+        this.updateContent(this.getSuccessHTML(accumulated));
+      } else {
+        this.updateContent(this.getErrorHTML('Translation interrupted'));
+      }
+    });
+
+    try {
+      port.postMessage({ text, swap: this.swapDirection, retry });
+    } catch (error) {
+      this.updateContent(this.getErrorHTML('Unable to send translation request'));
     }
   }
 
@@ -595,6 +627,14 @@ class TranslationPopup {
     return `
       <div class="ai-translator-error">
         <span>${this.escapeHtml(message)}</span>
+      </div>
+    `;
+  }
+
+  getStreamingHTML(partial) {
+    return `
+      <div class="ai-translator-content">
+        <div class="ai-translator-result ai-translator-streaming">${this.formatTranslatedText(partial)}</div>
       </div>
     `;
   }

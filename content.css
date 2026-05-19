@@ -256,3 +256,15 @@
 .ai-translator-action-btn:active {
   background: #d1d5db;
 }
+
+.ai-translator-streaming::after {
+  content: '▍';
+  display: inline-block;
+  margin-left: 2px;
+  color: #6b7280;
+  animation: ai-translator-blink 0.8s steps(1) infinite;
+}
+
+@keyframes ai-translator-blink {
+  50% { opacity: 0; }
+}
