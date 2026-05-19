@@ -265,6 +265,62 @@ const getSystemPrompt = (translationStyle) => {
   }
 };
 
+// LRU cache for recent translations. Backed by chrome.storage.session so it
+// survives service-worker restarts within the browser session but resets when
+// the browser closes. Bypassed on retry so users can force a fresh call.
+class TranslationCache {
+  constructor(maxEntries = 100) {
+    this.maxEntries = maxEntries;
+    this.storageKey = 'translation_cache_v1';
+  }
+
+  static makeKey(params) {
+    return JSON.stringify({
+      text: params.text,
+      firstLanguage: params.firstLanguage,
+      secondLanguage: params.secondLanguage,
+      translationStyle: params.translationStyle,
+      apiModel: params.apiModel,
+      apiEndpoint: params.apiEndpoint || '',
+      swap: Boolean(params.swap)
+    });
+  }
+
+  available() {
+    return !!(chrome.storage && chrome.storage.session);
+  }
+
+  async get(key) {
+    if (!this.available()) return null;
+    try {
+      const result = await chrome.storage.session.get(this.storageKey);
+      const entries = result[this.storageKey] || [];
+      const found = entries.find(e => e.key === key);
+      return found ? found.translation : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async set(key, translation) {
+    if (!this.available()) return;
+    try {
+      const result = await chrome.storage.session.get(this.storageKey);
+      let entries = result[this.storageKey] || [];
+      entries = entries.filter(e => e.key !== key);
+      entries.unshift({ key, translation, ts: Date.now() });
+      if (entries.length > this.maxEntries) {
+        entries.length = this.maxEntries;
+      }
+      await chrome.storage.session.set({ [this.storageKey]: entries });
+    } catch (error) {
+      // Cache failures must not break translation; swallow.
+    }
+  }
+}
+
+const translationCache = new TranslationCache();
+
 // Translation output is usually within ~1.5x of input length in tokens.
 // Add a 256-token buffer for short inputs, clamp to a safe upper bound so a
 // stray very-long selection cannot rack up a huge bill on a single call.
@@ -573,16 +629,35 @@ class TranslationService {
 
       settings.swap = Boolean(request.swap);
 
+      const cacheKey = TranslationCache.makeKey({
+        text: request.text,
+        firstLanguage: settings.firstLanguage,
+        secondLanguage: settings.secondLanguage,
+        translationStyle: settings.translationStyle,
+        apiModel: settings.apiModel,
+        apiEndpoint: settings.apiEndpoint,
+        swap: settings.swap
+      });
+
+      if (!request.retry) {
+        const cached = await translationCache.get(cacheKey);
+        if (cached) {
+          sendResponse({ translation: cached, fromCache: true });
+          return;
+        }
+      }
+
       try {
         const translation = await this.translate(request.text, settings);
+        await translationCache.set(cacheKey, translation);
         sendResponse({ translation });
       } catch (error) {
         let errorMessage = error.message;
-        
+
         if (error.message.includes('Failed to fetch')) {
           errorMessage = ERROR_MESSAGES.NETWORK_ERROR;
         }
-        
+
         sendResponse({ error: errorMessage });
       }
     });

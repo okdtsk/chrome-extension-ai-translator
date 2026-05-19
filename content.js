@@ -431,12 +431,13 @@ class TranslationPopup {
     }
   }
 
-  async translateText(text) {
+  async translateText(text, { retry = false } = {}) {
     try {
       const response = await chrome.runtime.sendMessage({
         action: 'translate',
         text: text,
-        swap: this.swapDirection
+        swap: this.swapDirection,
+        retry: retry
       });
 
       if (response.error) {
@@ -507,7 +508,7 @@ class TranslationPopup {
     const source = this.selectedTextWithBreaks || this.selectedText;
     if (!source) return;
     this.updateContent(this.getLoadingHTML());
-    this.translateText(source);
+    this.translateText(source, { retry: true });
   }
 
   handleSwap(event) {
