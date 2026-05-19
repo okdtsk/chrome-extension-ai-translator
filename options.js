@@ -38,7 +38,8 @@ class OptionsManager {
       'apiEndpoint',
       'apiModel',
       'translationStyle',
-      'popupWidth'
+      'popupWidth',
+      'historyEnabled'
     ]);
 
     this.populateForm(settings);
@@ -60,8 +61,11 @@ class OptionsManager {
     document.getElementById('secondLanguage').value = 
       settings.secondLanguage || 'English';
     
-    document.getElementById('autoTranslate').checked = 
+    document.getElementById('autoTranslate').checked =
       settings.autoTranslate || false;
+
+    document.getElementById('historyEnabled').checked =
+      settings.historyEnabled || false;
     
     document.getElementById('apiEndpoint').value = 
       settings.apiEndpoint || '';
@@ -114,6 +118,28 @@ class OptionsManager {
     const testBtn = document.getElementById('testConnectionBtn');
     if (testBtn) {
       testBtn.addEventListener('click', this.handleTestConnection.bind(this));
+    }
+
+    const clearHistoryBtn = document.getElementById('clearHistoryBtn');
+    if (clearHistoryBtn) {
+      clearHistoryBtn.addEventListener('click', this.handleClearHistory.bind(this));
+    }
+  }
+
+  async handleClearHistory() {
+    const resultEl = document.getElementById('clearHistoryResult');
+    if (!confirm('Delete all stored translation history?')) {
+      return;
+    }
+    try {
+      const response = await chrome.runtime.sendMessage({ action: 'clearHistory' });
+      if (response && response.success) {
+        this.setTestResult(resultEl, '✓ History cleared', 'success');
+      } else {
+        this.setTestResult(resultEl, `✕ ${response ? response.error : 'Failed to clear history'}`, 'error');
+      }
+    } catch (error) {
+      this.setTestResult(resultEl, `✕ ${error.message}`, 'error');
     }
   }
 
@@ -225,6 +251,7 @@ class OptionsManager {
       firstLanguage: formData.get('firstLanguage'),
       secondLanguage: formData.get('secondLanguage'),
       autoTranslate: formData.get('autoTranslate') === 'on',
+      historyEnabled: formData.get('historyEnabled') === 'on',
       apiEndpoint: formData.get('apiEndpoint'),
       apiKey: formData.get('apiKey'),
       apiModel: formData.get('apiModel'),

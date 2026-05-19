@@ -252,3 +252,10 @@ small {
 .test-result.pending {
   color: #5f6368;
 }
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}

@@ -57,6 +57,18 @@
         </div>
 
         <div class="form-group">
+          <label for="historyEnabled">
+            <input type="checkbox" id="historyEnabled" name="historyEnabled">
+            <span>Save translation history</span>
+          </label>
+          <small>When enabled, completed translations are stored locally (up to 100 entries) and can be browsed from the toolbar popup.</small>
+          <div class="history-actions">
+            <button type="button" id="clearHistoryBtn" class="btn btn-secondary">Clear history</button>
+            <span id="clearHistoryResult" class="test-result"></span>
+          </div>
+        </div>
+
+        <div class="form-group">
           <label>Popup Width</label>
           <div class="radio-group">
             <label class="radio-label">

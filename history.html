@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>AI Translator History</title>
+  <link rel="stylesheet" href="history.css">
+</head>
+<body>
+  <div class="container">
+    <header class="page-header">
+      <h1>Translation History</h1>
+      <div class="header-actions">
+        <span id="entryCount" class="entry-count"></span>
+        <button type="button" id="clearAllBtn" class="btn btn-danger">Clear all</button>
+      </div>
+    </header>
+
+    <div id="emptyState" class="empty-state" hidden>
+      <p>No history yet.</p>
+      <p class="empty-hint">Enable <strong>Save translation history</strong> in the extension settings to start recording translations.</p>
+    </div>
+
+    <ul id="historyList" class="history-list"></ul>
+  </div>
+  <script src="history.js"></script>
+</body>
+</html>

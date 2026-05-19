@@ -6,7 +6,8 @@ const DEFAULT_SETTINGS = {
   apiEndpoint: '',
   apiModel: 'gpt-3.5-turbo',
   translationStyle: 'balanced', // literal, accurate, balanced, natural, creative
-  popupWidth: 'medium' // narrow, medium, wide
+  popupWidth: 'medium', // narrow, medium, wide
+  historyEnabled: false
 };
 
 // Encrypted storage manager for sensitive data using Web Crypto API
@@ -197,21 +198,6 @@ class EncryptedStorageManager {
     return false; // No migration needed
   }
 
-  // Get all non-sensitive settings from local storage
-  async getNonSensitiveSettings() {
-    const settings = await chrome.storage.local.get([
-      'enabled',
-      'firstLanguage',
-      'secondLanguage',
-      'apiEndpoint',
-      'apiModel',
-      'autoTranslate',
-      'translationStyle',
-      'popupWidth'
-    ]);
-    return settings;
-  }
-
   // Save non-sensitive settings to local storage
   async saveNonSensitiveSettings(settings) {
     // Remove API key from settings before saving
@@ -321,6 +307,43 @@ class TranslationCache {
 
 const translationCache = new TranslationCache();
 
+// Opt-in persistent history of completed translations, capped to keep storage
+// bounded. Lives in chrome.storage.local so it survives browser restarts and
+// can be browsed from the history page.
+const HISTORY_STORAGE_KEY = 'translation_history_v1';
+const HISTORY_MAX_ENTRIES = 100;
+
+class TranslationHistory {
+  async list() {
+    const result = await chrome.storage.local.get(HISTORY_STORAGE_KEY);
+    return result[HISTORY_STORAGE_KEY] || [];
+  }
+
+  async append(entry) {
+    const list = await this.list();
+    // Skip immediate duplicates so a Retry on the same selection does not
+    // bloat the history with identical rows.
+    if (list.length > 0 && list[0].original === entry.original && list[0].translation === entry.translation) {
+      return;
+    }
+    list.unshift(entry);
+    if (list.length > HISTORY_MAX_ENTRIES) list.length = HISTORY_MAX_ENTRIES;
+    await chrome.storage.local.set({ [HISTORY_STORAGE_KEY]: list });
+  }
+
+  async clear() {
+    await chrome.storage.local.remove(HISTORY_STORAGE_KEY);
+  }
+
+  async deleteById(id) {
+    const list = await this.list();
+    const next = list.filter(e => e.id !== id);
+    await chrome.storage.local.set({ [HISTORY_STORAGE_KEY]: next });
+  }
+}
+
+const translationHistory = new TranslationHistory();
+
 // Translation output is usually within ~1.5x of input length in tokens.
 // Add a 256-token buffer for short inputs, clamp to a safe upper bound so a
 // stray very-long selection cannot rack up a huge bill on a single call.
@@ -348,23 +371,31 @@ class TranslationService {
   }
 
   async initializeSettings() {
-    // Initialize settings on every startup
+    // Read existing values for every key in DEFAULT_SETTINGS (except the
+    // sensitive apiKey, which is stored encrypted separately). Driving the
+    // read list from DEFAULT_SETTINGS means a new default cannot get silently
+    // overwritten on the next SW restart just because some hardcoded read
+    // list forgot about it.
     try {
       if (!encryptedStorage) {
         await initializeEncryptedStorage();
       }
-      
-      const result = await encryptedStorage.getNonSensitiveSettings();
+
+      const nonSensitiveKeys = Object.keys(DEFAULT_SETTINGS).filter(key => key !== 'apiKey');
+      const result = await chrome.storage.local.get(nonSensitiveKeys);
       const settings = { ...DEFAULT_SETTINGS, ...result };
-      
-      // Only update storage if there are missing keys (excluding apiKey)
-      const missingKeys = Object.keys(DEFAULT_SETTINGS).filter(key => key !== 'apiKey' && !(key in result));
+
+      const missingKeys = nonSensitiveKeys.filter(key => !(key in result));
       if (missingKeys.length > 0) {
-        await encryptedStorage.saveNonSensitiveSettings(settings);
+        // Only write the missing keys, not the entire settings blob. The
+        // previous behaviour rewrote every key with its current value, which
+        // is unnecessary I/O and risked clobbering concurrent writes.
+        const toSet = {};
+        for (const key of missingKeys) toSet[key] = settings[key];
+        await chrome.storage.local.set(toSet);
       }
     } catch (error) {
       console.error('Failed to initialize settings:', error);
-      // Fallback to defaults if storage fails
       const { apiKey, ...nonSensitiveDefaults } = DEFAULT_SETTINGS;
       await chrome.storage.local.set(nonSensitiveDefaults);
     }
@@ -650,6 +681,23 @@ class TranslationService {
       try {
         const translation = await this.translate(request.text, settings);
         await translationCache.set(cacheKey, translation);
+
+        const { historyEnabled = false } = await chrome.storage.local.get('historyEnabled');
+        if (historyEnabled) {
+          await translationHistory.append({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            original: request.text,
+            translation,
+            firstLanguage: settings.firstLanguage,
+            secondLanguage: settings.secondLanguage,
+            translationStyle: settings.translationStyle,
+            apiModel: settings.apiModel,
+            swap: settings.swap,
+            provider,
+            timestamp: Date.now()
+          });
+        }
+
         sendResponse({ translation });
       } catch (error) {
         let errorMessage = error.message;
@@ -742,6 +790,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     ensureInitialized()
       .then(() => translationService.handleTranslationRequest(request, sender, sendResponse))
       .catch(error => sendResponse({ error: error.message || 'Translation service unavailable' }));
+    return true;
+  } else if (request.action === 'getHistory') {
+    translationHistory.list()
+      .then(entries => sendResponse({ entries }))
+      .catch(error => sendResponse({ entries: [], error: error.message }));
+    return true;
+  } else if (request.action === 'clearHistory') {
+    translationHistory.clear()
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'deleteHistoryEntry') {
+    translationHistory.deleteById(request.id)
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   } else if (request.action === 'testConnection') {
     ensureInitialized()
