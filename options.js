@@ -16,10 +16,17 @@ class OptionsManager {
     };
     
     this.DEFAULT_MODELS = {
-      openai: 'gpt-3.5-turbo',
-      gemini: 'gemini-pro',
-      claude: 'claude-3-haiku-20240307',
-      ollama: 'llama2'
+      openai: 'gpt-4o-mini',
+      gemini: 'gemini-1.5-flash',
+      claude: 'claude-haiku-4-5',
+      ollama: 'llama3'
+    };
+
+    this.MODEL_PRESETS = {
+      openai: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+      gemini: ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro'],
+      claude: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'],
+      ollama: ['llama3', 'llama3.1', 'mistral', 'phi3', 'gemma2']
     };
     
     this.initialize();
@@ -28,6 +35,16 @@ class OptionsManager {
   async initialize() {
     await this.loadSettings();
     this.setupEventListeners();
+    this.updateModelPresets();
+  }
+
+  updateModelPresets() {
+    const datalist = document.getElementById('apiModelOptions');
+    if (!datalist) return;
+    const selected = document.querySelector('input[name="apiType"]:checked');
+    const apiType = selected ? selected.value : 'openai';
+    const presets = this.MODEL_PRESETS[apiType] || [];
+    datalist.innerHTML = presets.map(model => `<option value="${model}"></option>`).join('');
   }
 
   async loadSettings() {
@@ -192,7 +209,7 @@ class OptionsManager {
 
   handleApiTypeChange(event) {
     const apiType = event.target.value;
-    
+
     if (apiType === 'openai') {
       this.apiEndpointInput.value = this.API_ENDPOINTS.openai;
       document.getElementById('apiModel').value = this.DEFAULT_MODELS.openai;
@@ -206,6 +223,8 @@ class OptionsManager {
       this.apiEndpointInput.value = this.API_ENDPOINTS.ollama;
       document.getElementById('apiModel').value = this.DEFAULT_MODELS.ollama;
     }
+
+    this.updateModelPresets();
   }
 
   async handleSubmit(event) {

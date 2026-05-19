@@ -43,19 +43,19 @@ A Chrome extension that translates selected text using AI providers (OpenAI, Gem
 
 ### OpenAI
 - **Endpoint**: `https://api.openai.com/v1/chat/completions`
-- **Model**: `gpt-3.5-turbo`, `gpt-4`, etc.
+- **Model**: `gpt-4o-mini` (default), `gpt-4o`, `gpt-4-turbo`, `gpt-3.5-turbo`, etc.
 
 ### Gemini
 - **Endpoint**: `https://generativelanguage.googleapis.com/v1beta/models`
-- **Model**: `gemini-pro`
+- **Model**: `gemini-1.5-flash` (default), `gemini-1.5-pro`, `gemini-pro`.
 
 ### Claude (Anthropic)
 - **Endpoint**: `https://api.anthropic.com/v1/messages`
-- **Model**: `claude-3-haiku-20240307` (or a newer Claude model)
+- **Model**: `claude-haiku-4-5` (default), `claude-sonnet-4-6`, `claude-opus-4-7`.
 
 ### Ollama (local)
 - **Endpoint**: `http://localhost:11434/api/chat`
-- **Model**: `llama2`, `mistral`, `phi`, etc.
+- **Model**: `llama3` (default), `mistral`, `phi3`, `gemma2`, etc.
 - API key is not required.
 
 ## Development

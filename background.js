@@ -534,7 +534,7 @@ class TranslationService {
       method: 'POST',
       headers: headers,
       body: JSON.stringify({
-        model: settings.apiModel || 'claude-3-haiku-20240307',
+        model: settings.apiModel || 'claude-haiku-4-5',
         messages: userMessages.map(m => ({
           role: m.role === 'user' ? 'user' : 'assistant',
           content: m.content
