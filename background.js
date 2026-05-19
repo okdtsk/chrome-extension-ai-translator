@@ -513,6 +513,11 @@ class TranslationService {
   }
 
   async translate(text, settings) {
+    // When swap is set, flip the language order in the user prompt so users
+    // can force the opposite direction if the model misjudged the source.
+    const primary = settings.swap ? settings.secondLanguage : settings.firstLanguage;
+    const fallback = settings.swap ? settings.firstLanguage : settings.secondLanguage;
+
     const messages = [
       {
         role: 'system',
@@ -520,7 +525,7 @@ class TranslationService {
       },
       {
         role: 'user',
-        content: `Translate the following text to ${settings.firstLanguage} (or to ${settings.secondLanguage} if the text is already in ${settings.firstLanguage}):\n\n${text}`
+        content: `Translate the following text to ${primary} (or to ${fallback} if the text is already in ${primary}):\n\n${text}`
       }
     ];
 
@@ -565,6 +570,8 @@ class TranslationService {
         sendResponse({ error: ERROR_MESSAGES.NO_CONFIG });
         return;
       }
+
+      settings.swap = Boolean(request.swap);
 
       try {
         const translation = await this.translate(request.text, settings);

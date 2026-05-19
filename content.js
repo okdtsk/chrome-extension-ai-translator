@@ -19,6 +19,11 @@ class TranslationPopup {
     this.popupStartX = 0;
     this.popupStartY = 0;
 
+    // Action-bar state. swapDirection flips each time the user presses the
+    // swap button so a re-translate uses the opposite first/second order.
+    this.currentTranslation = '';
+    this.swapDirection = false;
+
     // Bind drag handlers once so add/removeEventListener match. bind() returns a
     // new function each call, so storing references is the only way to remove.
     this._onDragStart = this.handleDragStart.bind(this);
@@ -244,7 +249,11 @@ class TranslationPopup {
 
   create(x, y, selectionInfo = null) {
     this.remove();
-    
+
+    // Fresh popup starts in the default direction with no cached translation.
+    this.swapDirection = false;
+    this.currentTranslation = '';
+
     this.popup = document.createElement('div');
     this.popup.className = 'ai-translator-popup';
     this.applyWidthClass();
@@ -426,22 +435,26 @@ class TranslationPopup {
     try {
       const response = await chrome.runtime.sendMessage({
         action: 'translate',
-        text: text
+        text: text,
+        swap: this.swapDirection
       });
-      
+
       if (response.error) {
+        this.currentTranslation = '';
         this.updateContent(this.getErrorHTML(response.error));
       } else {
+        this.currentTranslation = response.translation || '';
         this.updateContent(this.getSuccessHTML(response.translation));
       }
     } catch (error) {
+      this.currentTranslation = '';
       this.updateContent(this.getErrorHTML('Unable to connect to translation service'));
     }
   }
 
   updateContent(html) {
     if (!this.popup) return;
-    
+
     // Preserve header with drag handle and close button, update content
     this.popup.innerHTML = `
       <div class="ai-translator-header">
@@ -452,10 +465,69 @@ class TranslationPopup {
         ${html}
       </div>
     `;
-    
+
     // Re-setup listeners since we recreated the elements
     this.setupDragListeners();
     this.setupCloseButton();
+    this.setupActionBar();
+  }
+
+  setupActionBar() {
+    if (!this.popup) return;
+
+    const copyBtn = this.popup.querySelector('.ai-translator-action-copy');
+    const retryBtn = this.popup.querySelector('.ai-translator-action-retry');
+    const swapBtn = this.popup.querySelector('.ai-translator-action-swap');
+
+    if (copyBtn) {
+      copyBtn.addEventListener('click', this.handleCopy.bind(this));
+    }
+    if (retryBtn) {
+      retryBtn.addEventListener('click', this.handleRetry.bind(this));
+    }
+    if (swapBtn) {
+      swapBtn.addEventListener('click', this.handleSwap.bind(this));
+    }
+  }
+
+  async handleCopy(event) {
+    event.stopPropagation();
+    const button = event.currentTarget;
+    if (!this.currentTranslation) return;
+    try {
+      await navigator.clipboard.writeText(this.currentTranslation);
+      this.flashButtonLabel(button, 'Copied');
+    } catch (error) {
+      this.flashButtonLabel(button, 'Copy failed');
+    }
+  }
+
+  handleRetry(event) {
+    event.stopPropagation();
+    const source = this.selectedTextWithBreaks || this.selectedText;
+    if (!source) return;
+    this.updateContent(this.getLoadingHTML());
+    this.translateText(source);
+  }
+
+  handleSwap(event) {
+    event.stopPropagation();
+    const source = this.selectedTextWithBreaks || this.selectedText;
+    if (!source) return;
+    this.swapDirection = !this.swapDirection;
+    this.updateContent(this.getLoadingHTML());
+    this.translateText(source);
+  }
+
+  flashButtonLabel(button, message) {
+    const original = button.dataset.label || button.textContent;
+    button.dataset.label = original;
+    button.textContent = message;
+    setTimeout(() => {
+      if (button.isConnected) {
+        button.textContent = original;
+      }
+    }, 1200);
   }
 
   getTranslateButtonHTML() {
@@ -491,9 +563,15 @@ class TranslationPopup {
   }
 
   getSuccessHTML(translation) {
+    const swapLabel = this.swapDirection ? 'Swap ↺' : 'Swap';
     return `
       <div class="ai-translator-content">
         <div class="ai-translator-result">${this.formatTranslatedText(translation)}</div>
+        <div class="ai-translator-action-bar">
+          <button type="button" class="ai-translator-action-btn ai-translator-action-copy">Copy</button>
+          <button type="button" class="ai-translator-action-btn ai-translator-action-retry">Retry</button>
+          <button type="button" class="ai-translator-action-btn ai-translator-action-swap">${swapLabel}</button>
+        </div>
       </div>
     `;
   }
