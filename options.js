@@ -106,10 +106,58 @@ class OptionsManager {
 
   setupEventListeners() {
     this.form.addEventListener('submit', this.handleSubmit.bind(this));
-    
+
     this.apiTypeRadios.forEach(radio => {
       radio.addEventListener('change', this.handleApiTypeChange.bind(this));
     });
+
+    const testBtn = document.getElementById('testConnectionBtn');
+    if (testBtn) {
+      testBtn.addEventListener('click', this.handleTestConnection.bind(this));
+    }
+  }
+
+  async handleTestConnection() {
+    const btn = document.getElementById('testConnectionBtn');
+    const resultEl = document.getElementById('testConnectionResult');
+    const settings = this.getFormData();
+
+    if (!settings.apiEndpoint) {
+      this.setTestResult(resultEl, 'Please enter an API endpoint first', 'error');
+      return;
+    }
+
+    btn.disabled = true;
+    this.setTestResult(resultEl, 'Testing…', 'pending');
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'testConnection',
+        apiEndpoint: settings.apiEndpoint,
+        apiModel: settings.apiModel,
+        apiKey: settings.apiKey,
+        firstLanguage: settings.firstLanguage,
+        secondLanguage: settings.secondLanguage
+      });
+
+      if (response && response.success) {
+        const sample = (response.translation || '').trim().slice(0, 80);
+        this.setTestResult(resultEl, `✓ Connected. Sample translation: "${sample}"`, 'success');
+      } else {
+        const message = response && response.error ? response.error : 'No response from background';
+        this.setTestResult(resultEl, `✕ ${message}`, 'error');
+      }
+    } catch (error) {
+      this.setTestResult(resultEl, `✕ ${error.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  setTestResult(el, message, type) {
+    if (!el) return;
+    el.textContent = message;
+    el.className = `test-result ${type}`;
   }
 
   handleApiTypeChange(event) {

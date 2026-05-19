@@ -648,6 +648,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then(() => translationService.handleTranslationRequest(request, sender, sendResponse))
       .catch(error => sendResponse({ error: error.message || 'Translation service unavailable' }));
     return true;
+  } else if (request.action === 'testConnection') {
+    ensureInitialized()
+      .then(async () => {
+        const provider = translationService.detectProvider(request.apiEndpoint);
+        let apiKey = request.apiKey;
+        if (!apiKey) {
+          apiKey = await encryptedStorage.getApiKey(provider);
+        }
+        if (!request.apiEndpoint || (provider !== 'ollama' && !apiKey)) {
+          sendResponse({ success: false, error: ERROR_MESSAGES.NO_CONFIG });
+          return;
+        }
+        const settings = {
+          apiEndpoint: request.apiEndpoint,
+          apiModel: request.apiModel,
+          apiKey,
+          firstLanguage: request.firstLanguage || DEFAULT_SETTINGS.firstLanguage,
+          secondLanguage: request.secondLanguage || DEFAULT_SETTINGS.secondLanguage,
+          translationStyle: 'balanced'
+        };
+        try {
+          const translation = await translationService.translate('Hello', settings);
+          sendResponse({ success: true, translation });
+        } catch (error) {
+          let errorMessage = error.message;
+          if (errorMessage && errorMessage.includes('Failed to fetch')) {
+            errorMessage = ERROR_MESSAGES.NETWORK_ERROR;
+          }
+          sendResponse({ success: false, error: errorMessage || ERROR_MESSAGES.GENERIC_ERROR });
+        }
+      })
+      .catch(error => sendResponse({ success: false, error: error.message || 'Translation service unavailable' }));
+    return true;
   }
 
   return false;
