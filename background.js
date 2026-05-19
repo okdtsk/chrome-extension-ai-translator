@@ -265,6 +265,17 @@ const getSystemPrompt = (translationStyle) => {
   }
 };
 
+// Translation output is usually within ~1.5x of input length in tokens.
+// Add a 256-token buffer for short inputs, clamp to a safe upper bound so a
+// stray very-long selection cannot rack up a huge bill on a single call.
+const MAX_OUTPUT_TOKENS_CAP = 4096;
+const MIN_OUTPUT_TOKENS = 512;
+const estimateMaxOutputTokens = (text) => {
+  const length = text ? text.length : 0;
+  const estimate = Math.ceil(length * 1.5) + 256;
+  return Math.min(MAX_OUTPUT_TOKENS_CAP, Math.max(MIN_OUTPUT_TOKENS, estimate));
+};
+
 const ERROR_MESSAGES = {
   NO_CONFIG: 'Please configure API settings in extension options',
   NETWORK_ERROR: 'Network error. Please check your internet connection and API endpoint.',
@@ -303,16 +314,16 @@ class TranslationService {
     }
   }
 
-  async callOpenAIAPI(settings, messages) {
+  async callOpenAIAPI(settings, messages, maxOutputTokens) {
     const headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${settings.apiKey || ''}`
     };
-    
+
     if (settings.organizationId) {
       headers['OpenAI-Organization'] = settings.organizationId;
     }
-    
+
     const response = await fetch(settings.apiEndpoint, {
       method: 'POST',
       headers: headers,
@@ -320,7 +331,7 @@ class TranslationService {
         model: settings.apiModel || 'gpt-3.5-turbo',
         messages: messages,
         temperature: 0.3,
-        max_tokens: 500
+        max_tokens: maxOutputTokens
       })
     });
 
@@ -337,7 +348,7 @@ class TranslationService {
     return responseData.choices[0].message.content;
   }
 
-  async callGeminiAPI(settings, messages) {
+  async callGeminiAPI(settings, messages, maxOutputTokens) {
     const apiKey = settings.apiKey || '';
     const model = settings.apiModel || 'gemini-pro';
     const url = `${settings.apiEndpoint}/${model}:generateContent?key=${apiKey}`;
@@ -357,7 +368,7 @@ class TranslationService {
         }],
         generationConfig: {
           temperature: 0.3,
-          maxOutputTokens: 500
+          maxOutputTokens: maxOutputTokens
         }
       })
     });
@@ -376,17 +387,17 @@ class TranslationService {
     return data.candidates[0].content.parts[0].text;
   }
 
-  async callClaudeAPI(settings, messages) {
+  async callClaudeAPI(settings, messages, maxOutputTokens) {
     const headers = {
       'Content-Type': 'application/json',
       'x-api-key': settings.apiKey || '',
       'anthropic-version': '2023-06-01'
     };
-    
+
     // Convert messages to Claude format
     const systemMessage = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
-    
+
     const response = await fetch(settings.apiEndpoint, {
       method: 'POST',
       headers: headers,
@@ -397,7 +408,7 @@ class TranslationService {
           content: m.content
         })),
         system: systemMessage ? systemMessage.content : undefined,
-        max_tokens: 500,
+        max_tokens: maxOutputTokens,
         temperature: 0.3
       })
     });
@@ -516,15 +527,17 @@ class TranslationService {
     const isGemini = settings.apiEndpoint.includes('generativelanguage.googleapis.com');
     const isClaude = settings.apiEndpoint.includes('anthropic.com');
     const isOllama = settings.apiEndpoint.includes(':11434') || settings.apiEndpoint.includes('ollama') || settings.apiEndpoint.includes('/api/chat');
-    
+
+    const maxOutputTokens = estimateMaxOutputTokens(text);
+
     if (isGemini) {
-      return await this.callGeminiAPI(settings, messages);
+      return await this.callGeminiAPI(settings, messages, maxOutputTokens);
     } else if (isClaude) {
-      return await this.callClaudeAPI(settings, messages);
+      return await this.callClaudeAPI(settings, messages, maxOutputTokens);
     } else if (isOllama) {
       return await this.callOllamaAPI(settings, messages);
     } else {
-      return await this.callOpenAIAPI(settings, messages);
+      return await this.callOpenAIAPI(settings, messages, maxOutputTokens);
     }
   }
 
