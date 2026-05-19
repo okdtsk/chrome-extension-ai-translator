@@ -803,8 +803,31 @@ function ensureInitialized() {
 // before the first message arrives.
 ensureInitialized();
 
-// Seed defaults only on fresh install, and never overwrite existing values.
+const CONTEXT_MENU_ID = 'ai-translator-translate-selection';
+
+// Register the right-click menu on install AND on every SW startup. Chrome
+// clears context menus when the extension is reloaded, so onInstalled alone
+// is not enough — re-register defensively.
+const registerContextMenu = () => {
+  try {
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_ID,
+      title: 'Translate selection',
+      contexts: ['selection']
+    }, () => {
+      // Swallow "duplicate id" errors from rapid SW restarts.
+      if (chrome.runtime.lastError) {
+        // no-op
+      }
+    });
+  } catch (error) {
+    // Ignore — context menus may not be available in some test environments.
+  }
+};
+
 chrome.runtime.onInstalled.addListener(async (details) => {
+  registerContextMenu();
+
   if (details.reason !== 'install') return;
 
   const { apiKey, ...defaults } = DEFAULT_SETTINGS;
@@ -820,6 +843,31 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     await chrome.storage.local.set(toSet);
   }
 });
+
+chrome.runtime.onStartup.addListener(() => {
+  registerContextMenu();
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== CONTEXT_MENU_ID) return;
+  if (!tab || typeof tab.id !== 'number') return;
+  chrome.tabs.sendMessage(tab.id, {
+    action: 'triggerTranslation',
+    selectionText: info.selectionText || ''
+  }).catch(() => {
+    // Tab may not have the content script (e.g. chrome:// pages).
+  });
+});
+
+if (chrome.commands && chrome.commands.onCommand) {
+  chrome.commands.onCommand.addListener((command, tab) => {
+    if (command !== 'translate-selection') return;
+    if (!tab || typeof tab.id !== 'number') return;
+    chrome.tabs.sendMessage(tab.id, { action: 'triggerTranslation' }).catch(() => {
+      // Same as above — silently ignore restricted pages.
+    });
+  });
+}
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'storeApiKey') {

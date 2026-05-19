@@ -37,6 +37,42 @@ class TranslationPopup {
     await this.loadSettings();
     this.setupEventListeners();
     this.setupStorageListener();
+    this.setupRuntimeListener();
+  }
+
+  setupRuntimeListener() {
+    if (!chrome.runtime || !chrome.runtime.onMessage) return;
+    chrome.runtime.onMessage.addListener((message) => {
+      if (message && message.action === 'triggerTranslation') {
+        this.triggerTranslation(message.selectionText);
+      }
+    });
+  }
+
+  triggerTranslation(fallbackText) {
+    if (!this.isEnabled) return;
+
+    const selection = window.getSelection();
+    const liveText = selection ? selection.toString().trim() : '';
+    const sourceText = liveText || (fallbackText ? fallbackText.trim() : '');
+
+    if (!sourceText || sourceText.length < this.MIN_TEXT_LENGTH) return;
+
+    const selectionInfo = liveText ? this.captureSelectionInfo(selection) : null;
+    this.selectedText = sourceText;
+    this.selectedTextWithBreaks = liveText
+      ? this.captureTextWithStructure(selection)
+      : sourceText;
+
+    if (selectionInfo) {
+      this.create(selectionInfo.x, selectionInfo.y, selectionInfo);
+    } else {
+      const x = window.innerWidth / 2;
+      const y = window.scrollY + window.innerHeight / 3;
+      this.create(x, y);
+    }
+    this.updateContent(this.getLoadingHTML());
+    this.translateText(this.selectedTextWithBreaks);
   }
 
   async loadSettings() {
