@@ -226,28 +226,72 @@ async function initializeEncryptedStorage() {
   }
 }
 
-const getSystemPrompt = (translationStyle) => {
+// Parse the free-form glossary textarea. Each non-comment line is one rule:
+//   - "term -> translation" / "term => translation" / "term → translation"
+//     forces the mapping.
+//   - "term (do not translate)" / "term (keep)" keeps the term unchanged.
+// A bare term with no arrow and no parenthetical is treated as "keep".
+const parseGlossary = (raw) => {
+  if (!raw) return [];
+  const rules = [];
+  for (const original of raw.split('\n')) {
+    const line = original.trim();
+    if (!line || line.startsWith('#')) continue;
+
+    const keepMatch = line.match(/^(.+?)\s*\(\s*(?:do not translate|keep(?: as[- ]is)?)\s*\)\s*$/i);
+    if (keepMatch) {
+      rules.push({ term: keepMatch[1].trim(), keep: true });
+      continue;
+    }
+
+    const arrowMatch = line.match(/^(.+?)\s*(?:=>|->|→)\s*(.+)$/);
+    if (arrowMatch) {
+      const term = arrowMatch[1].trim();
+      const translation = arrowMatch[2].trim();
+      if (term && translation) {
+        rules.push({ term, translation });
+        continue;
+      }
+    }
+
+    rules.push({ term: line, keep: true });
+  }
+  return rules;
+};
+
+const buildGlossarySection = (rules) => {
+  if (!rules || rules.length === 0) return '';
+  const lines = rules.map(rule =>
+    rule.keep
+      ? `- "${rule.term}" must remain unchanged`
+      : `- "${rule.term}" must be translated as "${rule.translation}"`
+  );
+  return `\n\nGlossary (apply strictly, overrides style preferences):\n${lines.join('\n')}`;
+};
+
+const getSystemPrompt = (translationStyle, glossaryRules) => {
   const style = translationStyle || 'balanced';
   const baseInstruction = 'IMPORTANT: Preserve the paragraph structure of the original text. Keep paragraph breaks where they appear in the source text. ';
-  
+  const glossarySection = buildGlossarySection(glossaryRules);
+
   switch(style) {
     case 'literal':
-      return baseInstruction + 'You are a strict literal translator. Translate the text word-for-word, preserving the exact structure and meaning. Do not adjust for grammar or natural flow. Return ONLY the translated text itself with preserved paragraph breaks.';
+      return baseInstruction + 'You are a strict literal translator. Translate the text word-for-word, preserving the exact structure and meaning. Do not adjust for grammar or natural flow. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
     
     case 'accurate':
-      return baseInstruction + 'You are a precise translator. Translate accurately with minimal adjustments only for basic grammar. Preserve the original structure as much as possible. Return ONLY the translated text itself with preserved paragraph breaks.';
+      return baseInstruction + 'You are a precise translator. Translate accurately with minimal adjustments only for basic grammar. Preserve the original structure as much as possible. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
     
     case 'balanced':
-      return baseInstruction + 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Maintain the original meaning but adjust grammar and expressions for clarity. Return ONLY the translated text itself with preserved paragraph breaks.';
+      return baseInstruction + 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Maintain the original meaning but adjust grammar and expressions for clarity. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
     
     case 'natural':
-      return baseInstruction + 'You are a natural translator. Translate with focus on natural expression in the target language. Adapt phrases and idioms while preserving the core meaning. Return ONLY the translated text itself with preserved paragraph breaks.';
+      return baseInstruction + 'You are a natural translator. Translate with focus on natural expression in the target language. Adapt phrases and idioms while preserving the core meaning. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
     
     case 'creative':
-      return baseInstruction + 'You are a creative translator. Translate with significant interpretive freedom, fully adapting cultural references, idioms, and expressions to best convey the spirit and emotional impact in the target language. Return ONLY the translated text itself with preserved paragraph breaks.';
+      return baseInstruction + 'You are a creative translator. Translate with significant interpretive freedom, fully adapting cultural references, idioms, and expressions to best convey the spirit and emotional impact in the target language. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
     
     default:
-      return baseInstruction + 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Return ONLY the translated text itself with preserved paragraph breaks.';
+      return baseInstruction + 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
   }
 };
 
@@ -268,7 +312,8 @@ class TranslationCache {
       translationStyle: params.translationStyle,
       apiModel: params.apiModel,
       apiEndpoint: params.apiEndpoint || '',
-      swap: Boolean(params.swap)
+      swap: Boolean(params.swap),
+      glossary: params.glossary || ''
     });
   }
 
@@ -605,10 +650,12 @@ class TranslationService {
     const primary = settings.swap ? settings.secondLanguage : settings.firstLanguage;
     const fallback = settings.swap ? settings.firstLanguage : settings.secondLanguage;
 
+    const glossaryRules = parseGlossary(settings.glossary);
+
     const messages = [
       {
         role: 'system',
-        content: getSystemPrompt(settings.translationStyle)
+        content: getSystemPrompt(settings.translationStyle, glossaryRules)
       },
       {
         role: 'user',
@@ -637,7 +684,7 @@ class TranslationService {
     if (request.action !== 'translate') return false;
 
     // Get settings with defaults
-    const keys = ['apiEndpoint', 'firstLanguage', 'secondLanguage', 'apiModel', 'translationStyle'];
+    const keys = ['apiEndpoint', 'firstLanguage', 'secondLanguage', 'apiModel', 'translationStyle', 'glossary'];
     const defaults = {
       firstLanguage: DEFAULT_SETTINGS.firstLanguage,
       secondLanguage: DEFAULT_SETTINGS.secondLanguage,
@@ -667,7 +714,8 @@ class TranslationService {
         translationStyle: settings.translationStyle,
         apiModel: settings.apiModel,
         apiEndpoint: settings.apiEndpoint,
-        swap: settings.swap
+        swap: settings.swap,
+        glossary: settings.glossary
       });
 
       if (!request.retry) {

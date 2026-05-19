@@ -88,6 +88,12 @@
         </div>
 
         <div class="form-group">
+          <label for="glossary">Custom Glossary</label>
+          <textarea id="glossary" name="glossary" rows="6" placeholder="React → リアクト&#10;Anthropic (do not translate)&#10;useState (keep)&#10;# Lines starting with # are comments"></textarea>
+          <small>One rule per line. Use <code>term → translation</code> (or <code>-&gt;</code>, <code>=&gt;</code>) to force a mapping, or <code>term (do not translate)</code> / <code>term (keep)</code> to keep a term unchanged. Lines starting with <code>#</code> are comments.</small>
+        </div>
+
+        <div class="form-group">
           <label>Translation Style</label>
           <div class="translation-style-group">
             <label class="style-option">

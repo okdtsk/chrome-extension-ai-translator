@@ -39,7 +39,8 @@ class OptionsManager {
       'apiModel',
       'translationStyle',
       'popupWidth',
-      'historyEnabled'
+      'historyEnabled',
+      'glossary'
     ]);
 
     this.populateForm(settings);
@@ -74,8 +75,11 @@ class OptionsManager {
     document.getElementById('apiKey').value = '';
     document.getElementById('apiKey').placeholder = 'Enter API key (stored encrypted)';
     
-    document.getElementById('apiModel').value = 
+    document.getElementById('apiModel').value =
       settings.apiModel || '';
+
+    document.getElementById('glossary').value =
+      settings.glossary || '';
     
     // Set translation style radio button
     const style = settings.translationStyle || 'balanced';
@@ -256,7 +260,8 @@ class OptionsManager {
       apiKey: formData.get('apiKey'),
       apiModel: formData.get('apiModel'),
       translationStyle: formData.get('translationStyle'),
-      popupWidth: formData.get('popupWidth')
+      popupWidth: formData.get('popupWidth'),
+      glossary: formData.get('glossary') || ''
     };
   }
 
