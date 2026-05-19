@@ -5,7 +5,8 @@ const DEFAULT_SETTINGS = {
   secondLanguage: 'English',
   apiEndpoint: '',
   apiModel: 'gpt-3.5-turbo',
-  translationStyle: 'balanced' // literal, accurate, balanced, natural, creative
+  translationStyle: 'balanced', // literal, accurate, balanced, natural, creative
+  popupWidth: 'medium' // narrow, medium, wide
 };
 
 // Encrypted storage manager for sensitive data using Web Crypto API
@@ -180,7 +181,7 @@ class EncryptedStorageManager {
           provider = 'gemini';
         } else if (result.apiEndpoint.includes('anthropic')) {
           provider = 'claude';
-        } else if (result.apiEndpoint.includes('localhost:11434') || result.apiEndpoint.includes('/api/chat')) {
+        } else if (result.apiEndpoint.includes(':11434') || result.apiEndpoint.includes('ollama') || result.apiEndpoint.includes('/api/chat')) {
           provider = 'ollama';
         }
       }
@@ -205,7 +206,8 @@ class EncryptedStorageManager {
       'apiEndpoint',
       'apiModel',
       'autoTranslate',
-      'translationStyle'
+      'translationStyle',
+      'popupWidth'
     ]);
     return settings;
   }
@@ -299,12 +301,6 @@ class TranslationService {
       const { apiKey, ...nonSensitiveDefaults } = DEFAULT_SETTINGS;
       await chrome.storage.local.set(nonSensitiveDefaults);
     }
-    
-    // Also handle fresh installs
-    chrome.runtime.onInstalled.addListener(async () => {
-      const { apiKey, ...nonSensitiveDefaults } = DEFAULT_SETTINGS;
-      await chrome.storage.local.set(nonSensitiveDefaults);
-    });
   }
 
   async callOpenAIAPI(settings, messages) {
@@ -519,7 +515,7 @@ class TranslationService {
 
     const isGemini = settings.apiEndpoint.includes('generativelanguage.googleapis.com');
     const isClaude = settings.apiEndpoint.includes('anthropic.com');
-    const isOllama = settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('/api/chat');
+    const isOllama = settings.apiEndpoint.includes(':11434') || settings.apiEndpoint.includes('ollama') || settings.apiEndpoint.includes('/api/chat');
     
     if (isGemini) {
       return await this.callGeminiAPI(settings, messages);
@@ -577,59 +573,84 @@ class TranslationService {
   
   detectProvider(endpoint) {
     if (!endpoint) return 'default';
-    
+
     if (endpoint.includes('openai')) {
       return 'openai';
     } else if (endpoint.includes('generativelanguage.googleapis.com')) {
       return 'gemini';
     } else if (endpoint.includes('anthropic')) {
       return 'claude';
-    } else if (endpoint.includes('localhost:11434') || endpoint.includes('/api/chat')) {
+    } else if (endpoint.includes(':11434') || endpoint.includes('ollama') || endpoint.includes('/api/chat')) {
       return 'ollama';
     }
-    
+
     return 'default';
   }
   
 }
 
-// Initialize the service
+// Initialize the service lazily. Listeners must be registered synchronously at
+// the top level (MV3), but storage/crypto are async — so callers await
+// ensureInitialized() before touching encryptedStorage or translationService.
 let translationService = null;
+let initPromise = null;
 
-// Initialize everything when the background script starts
-(async () => {
-  await initializeEncryptedStorage();
-  translationService = new TranslationService();
-})();
+function ensureInitialized() {
+  if (!initPromise) {
+    initPromise = (async () => {
+      await initializeEncryptedStorage();
+      translationService = new TranslationService();
+    })().catch(error => {
+      // Reset so the next call retries instead of returning a poisoned promise
+      initPromise = null;
+      throw error;
+    });
+  }
+  return initPromise;
+}
 
-// Set up message listener
+// Kick off init eagerly on script load, but don't depend on it completing
+// before the first message arrives.
+ensureInitialized();
+
+// Seed defaults only on fresh install, and never overwrite existing values.
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason !== 'install') return;
+
+  const { apiKey, ...defaults } = DEFAULT_SETTINGS;
+  const keys = Object.keys(defaults);
+  const existing = await chrome.storage.local.get(keys);
+  const toSet = {};
+  for (const key of keys) {
+    if (!(key in existing)) {
+      toSet[key] = defaults[key];
+    }
+  }
+  if (Object.keys(toSet).length > 0) {
+    await chrome.storage.local.set(toSet);
+  }
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'storeApiKey') {
-    // Handle API key storage
-    if (encryptedStorage) {
-      encryptedStorage.storeApiKey(request.provider, request.apiKey).then(() => {
-        sendResponse({ success: true });
-      }).catch(error => {
-        sendResponse({ success: false, error: error.message });
-      });
-    } else {
-      sendResponse({ success: false, error: 'Encrypted storage not initialized' });
-    }
+    ensureInitialized()
+      .then(() => encryptedStorage.storeApiKey(request.provider, request.apiKey))
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   } else if (request.action === 'checkApiKey') {
-    // Check if API key exists
-    if (encryptedStorage) {
-      encryptedStorage.hasApiKey(request.provider).then(hasKey => {
-        sendResponse({ hasApiKey: hasKey });
-      });
-    } else {
-      sendResponse({ hasApiKey: false });
-    }
+    ensureInitialized()
+      .then(() => encryptedStorage.hasApiKey(request.provider))
+      .then(hasKey => sendResponse({ hasApiKey: hasKey }))
+      .catch(() => sendResponse({ hasApiKey: false }));
     return true;
-  } else if (translationService) {
-    return translationService.handleTranslationRequest(request, sender, sendResponse);
+  } else if (request.action === 'translate') {
+    ensureInitialized()
+      .then(() => translationService.handleTranslationRequest(request, sender, sendResponse))
+      .catch(error => sendResponse({ error: error.message || 'Translation service unavailable' }));
+    return true;
   }
-  
+
   return false;
 });
 

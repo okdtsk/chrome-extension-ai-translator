@@ -18,7 +18,13 @@ class TranslationPopup {
     this.dragStartY = 0;
     this.popupStartX = 0;
     this.popupStartY = 0;
-    
+
+    // Bind drag handlers once so add/removeEventListener match. bind() returns a
+    // new function each call, so storing references is the only way to remove.
+    this._onDragStart = this.handleDragStart.bind(this);
+    this._onDragMove = this.handleDragMove.bind(this);
+    this._onDragEnd = this.handleDragEnd.bind(this);
+
     this.initialize();
   }
 
@@ -37,7 +43,8 @@ class TranslationPopup {
   }
 
   setupStorageListener() {
-    chrome.storage.onChanged.addListener((changes) => {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local') return;
       if (changes.enabled) {
         this.isEnabled = changes.enabled.newValue;
         if (!this.isEnabled) {
@@ -126,48 +133,38 @@ class TranslationPopup {
     if (!selection || selection.rangeCount === 0) {
       return selection.toString();
     }
-    
+
+    // Tags treated as paragraph breaks. The previous version also checked
+    // getComputedStyle(node).display === 'block' on a *detached* tempDiv,
+    // which returns UA defaults and was effectively dead code.
+    const BLOCK_TAGS = new Set([
+      'br', 'p', 'div',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+      'li', 'tr', 'article', 'section', 'blockquote', 'pre'
+    ]);
+
     try {
       const range = selection.getRangeAt(0);
-      const container = range.commonAncestorContainer;
-      
-      // Create a temporary div to extract HTML structure
+
       const tempDiv = document.createElement('div');
-      const clonedContents = range.cloneContents();
-      tempDiv.appendChild(clonedContents);
-      
-      // Process the cloned content to extract text with paragraph breaks
+      tempDiv.appendChild(range.cloneContents());
+
       const walker = document.createTreeWalker(
         tempDiv,
         NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
         null,
         false
       );
-      
-      let textParts = [];
+
+      const textParts = [];
       let currentParagraph = [];
-      let lastNode = null;
-      
+
       while (walker.nextNode()) {
         const node = walker.currentNode;
-        
+
         if (node.nodeType === Node.ELEMENT_NODE) {
-          // Check if this element causes a line break
           const tagName = node.tagName?.toLowerCase();
-          const display = window.getComputedStyle(node).display;
-          
-          if (tagName === 'br' || 
-              tagName === 'p' || 
-              tagName === 'div' || 
-              tagName === 'h1' || 
-              tagName === 'h2' || 
-              tagName === 'h3' || 
-              tagName === 'h4' || 
-              tagName === 'h5' || 
-              tagName === 'h6' ||
-              tagName === 'li' ||
-              display === 'block') {
-            
+          if (tagName && BLOCK_TAGS.has(tagName)) {
             if (currentParagraph.length > 0) {
               textParts.push(currentParagraph.join(' ').trim());
               currentParagraph = [];
@@ -179,20 +176,14 @@ class TranslationPopup {
             currentParagraph.push(text);
           }
         }
-        
-        lastNode = node;
       }
-      
-      // Add any remaining text
+
       if (currentParagraph.length > 0) {
         textParts.push(currentParagraph.join(' ').trim());
       }
-      
-      // Join paragraphs with double line breaks to preserve structure
+
       return textParts.filter(part => part.length > 0).join('\n\n');
-      
     } catch (error) {
-      // Fallback to simple text extraction
       return selection.toString();
     }
   }
@@ -268,11 +259,12 @@ class TranslationPopup {
     
     document.body.appendChild(this.popup);
     this.positionPopup(x, y, selectionInfo);
-    
-    // Setup drag functionality
+
+    // Document-level drag listeners are attached once per popup lifecycle.
+    // setupDragListeners() (called below and from updateContent) only re-binds
+    // the drag-handle mousedown.
+    this.attachDocumentDragListeners();
     this.setupDragListeners();
-    
-    // Setup close button
     this.setupCloseButton();
   }
 
@@ -321,12 +313,22 @@ class TranslationPopup {
   }
 
   setupDragListeners() {
+    // Drag handle is re-created by updateContent() innerHTML rewrites, so the
+    // mousedown listener must be re-attached each time. Document-level
+    // listeners are attached once per popup in attachDocumentDragListeners().
     const dragHandle = this.popup.querySelector('.ai-translator-drag-handle');
     if (!dragHandle) return;
-    
-    dragHandle.addEventListener('mousedown', this.handleDragStart.bind(this));
-    document.addEventListener('mousemove', this.handleDragMove.bind(this));
-    document.addEventListener('mouseup', this.handleDragEnd.bind(this));
+    dragHandle.addEventListener('mousedown', this._onDragStart);
+  }
+
+  attachDocumentDragListeners() {
+    document.addEventListener('mousemove', this._onDragMove);
+    document.addEventListener('mouseup', this._onDragEnd);
+  }
+
+  detachDocumentDragListeners() {
+    document.removeEventListener('mousemove', this._onDragMove);
+    document.removeEventListener('mouseup', this._onDragEnd);
   }
 
   setupCloseButton() {
@@ -400,10 +402,7 @@ class TranslationPopup {
 
   remove() {
     if (this.popup) {
-      // Clean up drag event listeners
-      document.removeEventListener('mousemove', this.handleDragMove.bind(this));
-      document.removeEventListener('mouseup', this.handleDragEnd.bind(this));
-      
+      this.detachDocumentDragListeners();
       this.popup.remove();
       this.popup = null;
       this.isDragging = false;

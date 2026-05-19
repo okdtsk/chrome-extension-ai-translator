@@ -97,7 +97,7 @@ class OptionsManager {
       document.getElementById('apiTypeGemini').checked = true;
     } else if (endpoint.includes('anthropic')) {
       document.getElementById('apiTypeClaude').checked = true;
-    } else if (endpoint.includes('localhost:11434') || endpoint.includes('/api/chat')) {
+    } else if (endpoint.includes(':11434') || endpoint.includes('ollama') || endpoint.includes('/api/chat')) {
       document.getElementById('apiTypeOllama').checked = true;
     } else {
       document.getElementById('apiTypeCustom').checked = true;
@@ -216,7 +216,7 @@ class OptionsManager {
       return 'gemini';
     } else if (endpoint.includes('anthropic')) {
       return 'claude';
-    } else if (endpoint.includes('localhost:11434') || endpoint.includes('/api/chat')) {
+    } else if (endpoint.includes(':11434') || endpoint.includes('ollama') || endpoint.includes('/api/chat')) {
       return 'ollama';
     }
     

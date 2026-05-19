@@ -69,7 +69,7 @@ class PopupManager {
       return 'Gemini';
     } else if (apiEndpoint.includes('anthropic')) {
       return 'Claude';
-    } else if (apiEndpoint.includes('localhost:11434') || apiEndpoint.includes('/api/chat')) {
+    } else if (apiEndpoint.includes(':11434') || apiEndpoint.includes('ollama') || apiEndpoint.includes('/api/chat')) {
       return 'Ollama';
     } else {
       return 'Custom';
