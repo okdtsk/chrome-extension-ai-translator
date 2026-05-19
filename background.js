@@ -542,14 +542,13 @@ class TranslationService {
     
     chrome.storage.local.get(keys, async (result) => {
       const settings = { ...defaults, ...result };
-      
-      // Get API key from encrypted storage
+
+      const provider = this.detectProvider(settings.apiEndpoint);
       if (encryptedStorage) {
-        const provider = this.detectProvider(settings.apiEndpoint);
         settings.apiKey = await encryptedStorage.getApiKey(provider);
       }
-      
-      if (!settings.apiEndpoint || !settings.apiKey) {
+
+      if (!settings.apiEndpoint || (provider !== 'ollama' && !settings.apiKey)) {
         sendResponse({ error: ERROR_MESSAGES.NO_CONFIG });
         return;
       }
