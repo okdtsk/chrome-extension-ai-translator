@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "AI Translator",
   "version": "1.0.0",
-  "description": "Translate selected text using OpenAI or Gemini compatible APIs",
+  "description": "Translate selected text using OpenAI, Gemini, Claude, or Ollama. API keys are encrypted and stored locally.",
   "permissions": [
     "storage",
     "contextMenus",
