@@ -1,3 +1,20 @@
+// Pure helpers (provider detection, glossary parsing, prompt construction,
+// cache-key derivation, error message mapping) live in core.js so Node tests
+// can require() the same code the service worker uses.
+importScripts('core.js');
+
+const {
+  detectProvider: coreDetectProvider,
+  estimateMaxOutputTokens,
+  parseGlossary,
+  buildGlossarySection,
+  getSystemPrompt,
+  makeCacheKey,
+  parseOpenAIErrorMessage,
+  parseClaudeErrorMessage,
+  ERROR_MESSAGES
+} = self.TranslatorCore;
+
 const DEFAULT_SETTINGS = {
   enabled: true,
   autoTranslate: false,
@@ -226,75 +243,6 @@ async function initializeEncryptedStorage() {
   }
 }
 
-// Parse the free-form glossary textarea. Each non-comment line is one rule:
-//   - "term -> translation" / "term => translation" / "term → translation"
-//     forces the mapping.
-//   - "term (do not translate)" / "term (keep)" keeps the term unchanged.
-// A bare term with no arrow and no parenthetical is treated as "keep".
-const parseGlossary = (raw) => {
-  if (!raw) return [];
-  const rules = [];
-  for (const original of raw.split('\n')) {
-    const line = original.trim();
-    if (!line || line.startsWith('#')) continue;
-
-    const keepMatch = line.match(/^(.+?)\s*\(\s*(?:do not translate|keep(?: as[- ]is)?)\s*\)\s*$/i);
-    if (keepMatch) {
-      rules.push({ term: keepMatch[1].trim(), keep: true });
-      continue;
-    }
-
-    const arrowMatch = line.match(/^(.+?)\s*(?:=>|->|→)\s*(.+)$/);
-    if (arrowMatch) {
-      const term = arrowMatch[1].trim();
-      const translation = arrowMatch[2].trim();
-      if (term && translation) {
-        rules.push({ term, translation });
-        continue;
-      }
-    }
-
-    rules.push({ term: line, keep: true });
-  }
-  return rules;
-};
-
-const buildGlossarySection = (rules) => {
-  if (!rules || rules.length === 0) return '';
-  const lines = rules.map(rule =>
-    rule.keep
-      ? `- "${rule.term}" must remain unchanged`
-      : `- "${rule.term}" must be translated as "${rule.translation}"`
-  );
-  return `\n\nGlossary (apply strictly, overrides style preferences):\n${lines.join('\n')}`;
-};
-
-const getSystemPrompt = (translationStyle, glossaryRules) => {
-  const style = translationStyle || 'balanced';
-  const baseInstruction = 'IMPORTANT: Preserve the paragraph structure of the original text. Keep paragraph breaks where they appear in the source text. ';
-  const glossarySection = buildGlossarySection(glossaryRules);
-
-  switch(style) {
-    case 'literal':
-      return baseInstruction + 'You are a strict literal translator. Translate the text word-for-word, preserving the exact structure and meaning. Do not adjust for grammar or natural flow. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
-    
-    case 'accurate':
-      return baseInstruction + 'You are a precise translator. Translate accurately with minimal adjustments only for basic grammar. Preserve the original structure as much as possible. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
-    
-    case 'balanced':
-      return baseInstruction + 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Maintain the original meaning but adjust grammar and expressions for clarity. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
-    
-    case 'natural':
-      return baseInstruction + 'You are a natural translator. Translate with focus on natural expression in the target language. Adapt phrases and idioms while preserving the core meaning. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
-    
-    case 'creative':
-      return baseInstruction + 'You are a creative translator. Translate with significant interpretive freedom, fully adapting cultural references, idioms, and expressions to best convey the spirit and emotional impact in the target language. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
-    
-    default:
-      return baseInstruction + 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Return ONLY the translated text itself with preserved paragraph breaks.' + glossarySection;
-  }
-};
-
 // LRU cache for recent translations. Backed by chrome.storage.session so it
 // survives service-worker restarts within the browser session but resets when
 // the browser closes. Bypassed on retry so users can force a fresh call.
@@ -305,16 +253,7 @@ class TranslationCache {
   }
 
   static makeKey(params) {
-    return JSON.stringify({
-      text: params.text,
-      firstLanguage: params.firstLanguage,
-      secondLanguage: params.secondLanguage,
-      translationStyle: params.translationStyle,
-      apiModel: params.apiModel,
-      apiEndpoint: params.apiEndpoint || '',
-      swap: Boolean(params.swap),
-      glossary: params.glossary || ''
-    });
+    return makeCacheKey(params);
   }
 
   available() {
@@ -388,27 +327,6 @@ class TranslationHistory {
 }
 
 const translationHistory = new TranslationHistory();
-
-// Translation output is usually within ~1.5x of input length in tokens.
-// Add a 256-token buffer for short inputs, clamp to a safe upper bound so a
-// stray very-long selection cannot rack up a huge bill on a single call.
-const MAX_OUTPUT_TOKENS_CAP = 4096;
-const MIN_OUTPUT_TOKENS = 512;
-const estimateMaxOutputTokens = (text) => {
-  const length = text ? text.length : 0;
-  const estimate = Math.ceil(length * 1.5) + 256;
-  return Math.min(MAX_OUTPUT_TOKENS_CAP, Math.max(MIN_OUTPUT_TOKENS, estimate));
-};
-
-const ERROR_MESSAGES = {
-  NO_CONFIG: 'Please configure API settings in extension options',
-  NETWORK_ERROR: 'Network error. Please check your internet connection and API endpoint.',
-  AUTH_FAILED: 'Authentication failed. Please check your API key.',
-  INSUFFICIENT_QUOTA: 'No credits remaining. Please add credits to your OpenAI account.',
-  RATE_LIMIT: 'Rate limit exceeded. Please try again later.',
-  INVALID_RESPONSE: 'Unexpected response format from API.',
-  GENERIC_ERROR: 'Translation failed. Please check your settings and try again.'
-};
 
 class TranslationService {
   constructor() {
@@ -559,29 +477,7 @@ class TranslationService {
   }
 
   parseClaudeError(errorData, status) {
-    if (errorData.error) {
-      const errorType = errorData.error.type;
-      const errorMessage = errorData.error.message;
-      
-      switch (errorType) {
-        case 'rate_limit_error':
-          return new Error(`${ERROR_MESSAGES.RATE_LIMIT} ${errorMessage}`);
-        case 'authentication_error':
-          return new Error(ERROR_MESSAGES.AUTH_FAILED);
-        case 'invalid_request_error':
-          return new Error(`Invalid request: ${errorMessage}`);
-        default:
-          return new Error(`API Error: ${errorMessage || errorType}`);
-      }
-    }
-    
-    if (status === 401) {
-      return new Error(ERROR_MESSAGES.AUTH_FAILED);
-    } else if (status === 429) {
-      return new Error(ERROR_MESSAGES.RATE_LIMIT);
-    }
-    
-    return new Error(ERROR_MESSAGES.GENERIC_ERROR);
+    return new Error(parseClaudeErrorMessage(errorData, status));
   }
 
   async callOllamaAPI(settings, messages) {
@@ -619,29 +515,7 @@ class TranslationService {
   }
 
   parseOpenAIError(errorData, status) {
-    if (errorData.error) {
-      const errorCode = errorData.error.code;
-      const errorMessage = errorData.error.message;
-      
-      switch (errorCode) {
-        case 'rate_limit_exceeded':
-          return new Error(`${ERROR_MESSAGES.RATE_LIMIT} ${errorMessage}`);
-        case 'insufficient_quota':
-          return new Error(ERROR_MESSAGES.INSUFFICIENT_QUOTA);
-        case 'invalid_api_key':
-          return new Error(ERROR_MESSAGES.AUTH_FAILED);
-        default:
-          return new Error(`API Error: ${errorMessage || errorCode}`);
-      }
-    }
-    
-    if (status === 401) {
-      return new Error(ERROR_MESSAGES.AUTH_FAILED);
-    } else if (status === 429) {
-      return new Error(ERROR_MESSAGES.RATE_LIMIT);
-    }
-    
-    return new Error(ERROR_MESSAGES.GENERIC_ERROR);
+    return new Error(parseOpenAIErrorMessage(errorData, status));
   }
 
   async translate(text, settings) {
@@ -762,19 +636,7 @@ class TranslationService {
   }
   
   detectProvider(endpoint) {
-    if (!endpoint) return 'default';
-
-    if (endpoint.includes('openai')) {
-      return 'openai';
-    } else if (endpoint.includes('generativelanguage.googleapis.com')) {
-      return 'gemini';
-    } else if (endpoint.includes('anthropic')) {
-      return 'claude';
-    } else if (endpoint.includes(':11434') || endpoint.includes('ollama') || endpoint.includes('/api/chat')) {
-      return 'ollama';
-    }
-
-    return 'default';
+    return coreDetectProvider(endpoint);
   }
   
 }

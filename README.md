@@ -60,14 +60,26 @@ A Chrome extension that translates selected text using AI providers (OpenAI, Gem
 
 ## Development
 
-Vanilla JavaScript, no build step or npm dependencies. Load the directory directly via **Load unpacked** in `chrome://extensions/`.
+Vanilla JavaScript, no build step or runtime npm dependencies. Load the directory directly via **Load unpacked** in `chrome://extensions/`.
 
 Files:
 - `manifest.json` — extension manifest (Manifest V3, service worker).
 - `background.js` — service worker: provider adapters, encrypted storage, message handling.
+- `core.js` — pure helpers (provider detection, glossary parsing, prompt construction, cache keys, error mapping). Loaded by the service worker via `importScripts` and by the test harness via `require`.
 - `content.js` / `content.css` — content script: selection detection, popup UI.
 - `popup.html` / `popup.js` / `popup.css` — toolbar action popup.
 - `options.html` / `options.js` / `options.css` — settings page.
+- `history.html` / `history.js` / `history.css` — translation history page.
+
+### Tests
+
+A small Node-based test harness covers the pure helpers in `core.js`:
+
+```bash
+npm test
+```
+
+(Node 18+; no other dependencies.)
 
 ### Packaging
 
