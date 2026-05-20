@@ -218,3 +218,44 @@ small {
 .status.warning {
   color: #f9ab00;
 }
+
+.btn-secondary {
+  background: #e8eaed;
+  color: #202124;
+}
+
+.btn-secondary:hover {
+  background: #dadce0;
+}
+
+.btn-secondary:disabled {
+  background: #f1f3f4;
+  color: #80868b;
+  cursor: not-allowed;
+}
+
+.test-result {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.test-result.success {
+  color: #2e7d32;
+}
+
+.test-result.error {
+  color: #c62828;
+}
+
+.test-result.pending {
+  color: #5f6368;
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}

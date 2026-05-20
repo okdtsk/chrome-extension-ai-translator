@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "AI Translator",
   "version": "1.0.0",
-  "description": "Translate selected text using OpenAI or Gemini compatible APIs",
+  "description": "Translate selected text using OpenAI, Gemini, Claude, or Ollama. API keys are encrypted and stored locally.",
   "permissions": [
     "storage",
     "contextMenus",
@@ -38,5 +38,14 @@
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
+  },
+  "commands": {
+    "translate-selection": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Translate the currently selected text"
+    }
   }
 }

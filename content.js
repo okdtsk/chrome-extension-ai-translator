@@ -18,7 +18,18 @@ class TranslationPopup {
     this.dragStartY = 0;
     this.popupStartX = 0;
     this.popupStartY = 0;
-    
+
+    // Action-bar state. swapDirection flips each time the user presses the
+    // swap button so a re-translate uses the opposite first/second order.
+    this.currentTranslation = '';
+    this.swapDirection = false;
+
+    // Bind drag handlers once so add/removeEventListener match. bind() returns a
+    // new function each call, so storing references is the only way to remove.
+    this._onDragStart = this.handleDragStart.bind(this);
+    this._onDragMove = this.handleDragMove.bind(this);
+    this._onDragEnd = this.handleDragEnd.bind(this);
+
     this.initialize();
   }
 
@@ -26,6 +37,42 @@ class TranslationPopup {
     await this.loadSettings();
     this.setupEventListeners();
     this.setupStorageListener();
+    this.setupRuntimeListener();
+  }
+
+  setupRuntimeListener() {
+    if (!chrome.runtime || !chrome.runtime.onMessage) return;
+    chrome.runtime.onMessage.addListener((message) => {
+      if (message && message.action === 'triggerTranslation') {
+        this.triggerTranslation(message.selectionText);
+      }
+    });
+  }
+
+  triggerTranslation(fallbackText) {
+    if (!this.isEnabled) return;
+
+    const selection = window.getSelection();
+    const liveText = selection ? selection.toString().trim() : '';
+    const sourceText = liveText || (fallbackText ? fallbackText.trim() : '');
+
+    if (!sourceText || sourceText.length < this.MIN_TEXT_LENGTH) return;
+
+    const selectionInfo = liveText ? this.captureSelectionInfo(selection) : null;
+    this.selectedText = sourceText;
+    this.selectedTextWithBreaks = liveText
+      ? this.captureTextWithStructure(selection)
+      : sourceText;
+
+    if (selectionInfo) {
+      this.create(selectionInfo.x, selectionInfo.y, selectionInfo);
+    } else {
+      const x = window.innerWidth / 2;
+      const y = window.scrollY + window.innerHeight / 3;
+      this.create(x, y);
+    }
+    this.updateContent(this.getLoadingHTML());
+    this.translateText(this.selectedTextWithBreaks);
   }
 
   async loadSettings() {
@@ -37,7 +84,8 @@ class TranslationPopup {
   }
 
   setupStorageListener() {
-    chrome.storage.onChanged.addListener((changes) => {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local') return;
       if (changes.enabled) {
         this.isEnabled = changes.enabled.newValue;
         if (!this.isEnabled) {
@@ -126,48 +174,38 @@ class TranslationPopup {
     if (!selection || selection.rangeCount === 0) {
       return selection.toString();
     }
-    
+
+    // Tags treated as paragraph breaks. The previous version also checked
+    // getComputedStyle(node).display === 'block' on a *detached* tempDiv,
+    // which returns UA defaults and was effectively dead code.
+    const BLOCK_TAGS = new Set([
+      'br', 'p', 'div',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+      'li', 'tr', 'article', 'section', 'blockquote', 'pre'
+    ]);
+
     try {
       const range = selection.getRangeAt(0);
-      const container = range.commonAncestorContainer;
-      
-      // Create a temporary div to extract HTML structure
+
       const tempDiv = document.createElement('div');
-      const clonedContents = range.cloneContents();
-      tempDiv.appendChild(clonedContents);
-      
-      // Process the cloned content to extract text with paragraph breaks
+      tempDiv.appendChild(range.cloneContents());
+
       const walker = document.createTreeWalker(
         tempDiv,
         NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
         null,
         false
       );
-      
-      let textParts = [];
+
+      const textParts = [];
       let currentParagraph = [];
-      let lastNode = null;
-      
+
       while (walker.nextNode()) {
         const node = walker.currentNode;
-        
+
         if (node.nodeType === Node.ELEMENT_NODE) {
-          // Check if this element causes a line break
           const tagName = node.tagName?.toLowerCase();
-          const display = window.getComputedStyle(node).display;
-          
-          if (tagName === 'br' || 
-              tagName === 'p' || 
-              tagName === 'div' || 
-              tagName === 'h1' || 
-              tagName === 'h2' || 
-              tagName === 'h3' || 
-              tagName === 'h4' || 
-              tagName === 'h5' || 
-              tagName === 'h6' ||
-              tagName === 'li' ||
-              display === 'block') {
-            
+          if (tagName && BLOCK_TAGS.has(tagName)) {
             if (currentParagraph.length > 0) {
               textParts.push(currentParagraph.join(' ').trim());
               currentParagraph = [];
@@ -179,20 +217,14 @@ class TranslationPopup {
             currentParagraph.push(text);
           }
         }
-        
-        lastNode = node;
       }
-      
-      // Add any remaining text
+
       if (currentParagraph.length > 0) {
         textParts.push(currentParagraph.join(' ').trim());
       }
-      
-      // Join paragraphs with double line breaks to preserve structure
+
       return textParts.filter(part => part.length > 0).join('\n\n');
-      
     } catch (error) {
-      // Fallback to simple text extraction
       return selection.toString();
     }
   }
@@ -253,7 +285,11 @@ class TranslationPopup {
 
   create(x, y, selectionInfo = null) {
     this.remove();
-    
+
+    // Fresh popup starts in the default direction with no cached translation.
+    this.swapDirection = false;
+    this.currentTranslation = '';
+
     this.popup = document.createElement('div');
     this.popup.className = 'ai-translator-popup';
     this.applyWidthClass();
@@ -268,11 +304,12 @@ class TranslationPopup {
     
     document.body.appendChild(this.popup);
     this.positionPopup(x, y, selectionInfo);
-    
-    // Setup drag functionality
+
+    // Document-level drag listeners are attached once per popup lifecycle.
+    // setupDragListeners() (called below and from updateContent) only re-binds
+    // the drag-handle mousedown.
+    this.attachDocumentDragListeners();
     this.setupDragListeners();
-    
-    // Setup close button
     this.setupCloseButton();
   }
 
@@ -321,12 +358,22 @@ class TranslationPopup {
   }
 
   setupDragListeners() {
+    // Drag handle is re-created by updateContent() innerHTML rewrites, so the
+    // mousedown listener must be re-attached each time. Document-level
+    // listeners are attached once per popup in attachDocumentDragListeners().
     const dragHandle = this.popup.querySelector('.ai-translator-drag-handle');
     if (!dragHandle) return;
-    
-    dragHandle.addEventListener('mousedown', this.handleDragStart.bind(this));
-    document.addEventListener('mousemove', this.handleDragMove.bind(this));
-    document.addEventListener('mouseup', this.handleDragEnd.bind(this));
+    dragHandle.addEventListener('mousedown', this._onDragStart);
+  }
+
+  attachDocumentDragListeners() {
+    document.addEventListener('mousemove', this._onDragMove);
+    document.addEventListener('mouseup', this._onDragEnd);
+  }
+
+  detachDocumentDragListeners() {
+    document.removeEventListener('mousemove', this._onDragMove);
+    document.removeEventListener('mouseup', this._onDragEnd);
   }
 
   setupCloseButton() {
@@ -400,10 +447,7 @@ class TranslationPopup {
 
   remove() {
     if (this.popup) {
-      // Clean up drag event listeners
-      document.removeEventListener('mousemove', this.handleDragMove.bind(this));
-      document.removeEventListener('mouseup', this.handleDragEnd.bind(this));
-      
+      this.detachDocumentDragListeners();
       this.popup.remove();
       this.popup = null;
       this.isDragging = false;
@@ -423,26 +467,63 @@ class TranslationPopup {
     }
   }
 
-  async translateText(text) {
+  translateText(text, { retry = false } = {}) {
+    // Open a fresh port per translation. Background streams deltas back; we
+    // accumulate them into currentTranslation and re-render the popup body.
+    let port;
     try {
-      const response = await chrome.runtime.sendMessage({
-        action: 'translate',
-        text: text
-      });
-      
-      if (response.error) {
-        this.updateContent(this.getErrorHTML(response.error));
-      } else {
-        this.updateContent(this.getSuccessHTML(response.translation));
-      }
+      port = chrome.runtime.connect({ name: 'translate' });
     } catch (error) {
+      this.currentTranslation = '';
       this.updateContent(this.getErrorHTML('Unable to connect to translation service'));
+      return;
+    }
+
+    let accumulated = '';
+    let finished = false;
+
+    port.onMessage.addListener((msg) => {
+      if (!msg || !this.popup) return;
+      if (msg.type === 'delta' && typeof msg.text === 'string') {
+        accumulated += msg.text;
+        this.currentTranslation = accumulated;
+        this.updateContent(this.getStreamingHTML(accumulated));
+      } else if (msg.type === 'done') {
+        finished = true;
+        this.currentTranslation = msg.translation || accumulated;
+        this.updateContent(this.getSuccessHTML(this.currentTranslation));
+      } else if (msg.type === 'cached') {
+        finished = true;
+        this.currentTranslation = msg.translation || '';
+        this.updateContent(this.getSuccessHTML(this.currentTranslation));
+      } else if (msg.type === 'error') {
+        finished = true;
+        this.currentTranslation = '';
+        this.updateContent(this.getErrorHTML(msg.error || 'Translation failed'));
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (finished || !this.popup) return;
+      if (accumulated) {
+        // Stream cut off mid-flight — show what we have.
+        this.currentTranslation = accumulated;
+        this.updateContent(this.getSuccessHTML(accumulated));
+      } else {
+        this.updateContent(this.getErrorHTML('Translation interrupted'));
+      }
+    });
+
+    try {
+      port.postMessage({ text, swap: this.swapDirection, retry });
+    } catch (error) {
+      this.updateContent(this.getErrorHTML('Unable to send translation request'));
     }
   }
 
   updateContent(html) {
     if (!this.popup) return;
-    
+
     // Preserve header with drag handle and close button, update content
     this.popup.innerHTML = `
       <div class="ai-translator-header">
@@ -453,10 +534,69 @@ class TranslationPopup {
         ${html}
       </div>
     `;
-    
+
     // Re-setup listeners since we recreated the elements
     this.setupDragListeners();
     this.setupCloseButton();
+    this.setupActionBar();
+  }
+
+  setupActionBar() {
+    if (!this.popup) return;
+
+    const copyBtn = this.popup.querySelector('.ai-translator-action-copy');
+    const retryBtn = this.popup.querySelector('.ai-translator-action-retry');
+    const swapBtn = this.popup.querySelector('.ai-translator-action-swap');
+
+    if (copyBtn) {
+      copyBtn.addEventListener('click', this.handleCopy.bind(this));
+    }
+    if (retryBtn) {
+      retryBtn.addEventListener('click', this.handleRetry.bind(this));
+    }
+    if (swapBtn) {
+      swapBtn.addEventListener('click', this.handleSwap.bind(this));
+    }
+  }
+
+  async handleCopy(event) {
+    event.stopPropagation();
+    const button = event.currentTarget;
+    if (!this.currentTranslation) return;
+    try {
+      await navigator.clipboard.writeText(this.currentTranslation);
+      this.flashButtonLabel(button, 'Copied');
+    } catch (error) {
+      this.flashButtonLabel(button, 'Copy failed');
+    }
+  }
+
+  handleRetry(event) {
+    event.stopPropagation();
+    const source = this.selectedTextWithBreaks || this.selectedText;
+    if (!source) return;
+    this.updateContent(this.getLoadingHTML());
+    this.translateText(source, { retry: true });
+  }
+
+  handleSwap(event) {
+    event.stopPropagation();
+    const source = this.selectedTextWithBreaks || this.selectedText;
+    if (!source) return;
+    this.swapDirection = !this.swapDirection;
+    this.updateContent(this.getLoadingHTML());
+    this.translateText(source);
+  }
+
+  flashButtonLabel(button, message) {
+    const original = button.dataset.label || button.textContent;
+    button.dataset.label = original;
+    button.textContent = message;
+    setTimeout(() => {
+      if (button.isConnected) {
+        button.textContent = original;
+      }
+    }, 1200);
   }
 
   getTranslateButtonHTML() {
@@ -491,10 +631,24 @@ class TranslationPopup {
     `;
   }
 
+  getStreamingHTML(partial) {
+    return `
+      <div class="ai-translator-content">
+        <div class="ai-translator-result ai-translator-streaming">${this.formatTranslatedText(partial)}</div>
+      </div>
+    `;
+  }
+
   getSuccessHTML(translation) {
+    const swapLabel = this.swapDirection ? 'Swap ↺' : 'Swap';
     return `
       <div class="ai-translator-content">
         <div class="ai-translator-result">${this.formatTranslatedText(translation)}</div>
+        <div class="ai-translator-action-bar">
+          <button type="button" class="ai-translator-action-btn ai-translator-action-copy">Copy</button>
+          <button type="button" class="ai-translator-action-btn ai-translator-action-retry">Retry</button>
+          <button type="button" class="ai-translator-action-btn ai-translator-action-swap">${swapLabel}</button>
+        </div>
       </div>
     `;
   }

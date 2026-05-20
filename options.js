@@ -16,10 +16,17 @@ class OptionsManager {
     };
     
     this.DEFAULT_MODELS = {
-      openai: 'gpt-3.5-turbo',
-      gemini: 'gemini-pro',
-      claude: 'claude-3-haiku-20240307',
-      ollama: 'llama2'
+      openai: 'gpt-4o-mini',
+      gemini: 'gemini-1.5-flash',
+      claude: 'claude-haiku-4-5',
+      ollama: 'llama3'
+    };
+
+    this.MODEL_PRESETS = {
+      openai: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+      gemini: ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro'],
+      claude: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-7'],
+      ollama: ['llama3', 'llama3.1', 'mistral', 'phi3', 'gemma2']
     };
     
     this.initialize();
@@ -28,6 +35,16 @@ class OptionsManager {
   async initialize() {
     await this.loadSettings();
     this.setupEventListeners();
+    this.updateModelPresets();
+  }
+
+  updateModelPresets() {
+    const datalist = document.getElementById('apiModelOptions');
+    if (!datalist) return;
+    const selected = document.querySelector('input[name="apiType"]:checked');
+    const apiType = selected ? selected.value : 'openai';
+    const presets = this.MODEL_PRESETS[apiType] || [];
+    datalist.innerHTML = presets.map(model => `<option value="${model}"></option>`).join('');
   }
 
   async loadSettings() {
@@ -38,7 +55,9 @@ class OptionsManager {
       'apiEndpoint',
       'apiModel',
       'translationStyle',
-      'popupWidth'
+      'popupWidth',
+      'historyEnabled',
+      'glossary'
     ]);
 
     this.populateForm(settings);
@@ -60,8 +79,11 @@ class OptionsManager {
     document.getElementById('secondLanguage').value = 
       settings.secondLanguage || 'English';
     
-    document.getElementById('autoTranslate').checked = 
+    document.getElementById('autoTranslate').checked =
       settings.autoTranslate || false;
+
+    document.getElementById('historyEnabled').checked =
+      settings.historyEnabled || false;
     
     document.getElementById('apiEndpoint').value = 
       settings.apiEndpoint || '';
@@ -70,8 +92,11 @@ class OptionsManager {
     document.getElementById('apiKey').value = '';
     document.getElementById('apiKey').placeholder = 'Enter API key (stored encrypted)';
     
-    document.getElementById('apiModel').value = 
+    document.getElementById('apiModel').value =
       settings.apiModel || '';
+
+    document.getElementById('glossary').value =
+      settings.glossary || '';
     
     // Set translation style radio button
     const style = settings.translationStyle || 'balanced';
@@ -97,7 +122,7 @@ class OptionsManager {
       document.getElementById('apiTypeGemini').checked = true;
     } else if (endpoint.includes('anthropic')) {
       document.getElementById('apiTypeClaude').checked = true;
-    } else if (endpoint.includes('localhost:11434') || endpoint.includes('/api/chat')) {
+    } else if (endpoint.includes(':11434') || endpoint.includes('ollama') || endpoint.includes('/api/chat')) {
       document.getElementById('apiTypeOllama').checked = true;
     } else {
       document.getElementById('apiTypeCustom').checked = true;
@@ -106,15 +131,85 @@ class OptionsManager {
 
   setupEventListeners() {
     this.form.addEventListener('submit', this.handleSubmit.bind(this));
-    
+
     this.apiTypeRadios.forEach(radio => {
       radio.addEventListener('change', this.handleApiTypeChange.bind(this));
     });
+
+    const testBtn = document.getElementById('testConnectionBtn');
+    if (testBtn) {
+      testBtn.addEventListener('click', this.handleTestConnection.bind(this));
+    }
+
+    const clearHistoryBtn = document.getElementById('clearHistoryBtn');
+    if (clearHistoryBtn) {
+      clearHistoryBtn.addEventListener('click', this.handleClearHistory.bind(this));
+    }
+  }
+
+  async handleClearHistory() {
+    const resultEl = document.getElementById('clearHistoryResult');
+    if (!confirm('Delete all stored translation history?')) {
+      return;
+    }
+    try {
+      const response = await chrome.runtime.sendMessage({ action: 'clearHistory' });
+      if (response && response.success) {
+        this.setTestResult(resultEl, '✓ History cleared', 'success');
+      } else {
+        this.setTestResult(resultEl, `✕ ${response ? response.error : 'Failed to clear history'}`, 'error');
+      }
+    } catch (error) {
+      this.setTestResult(resultEl, `✕ ${error.message}`, 'error');
+    }
+  }
+
+  async handleTestConnection() {
+    const btn = document.getElementById('testConnectionBtn');
+    const resultEl = document.getElementById('testConnectionResult');
+    const settings = this.getFormData();
+
+    if (!settings.apiEndpoint) {
+      this.setTestResult(resultEl, 'Please enter an API endpoint first', 'error');
+      return;
+    }
+
+    btn.disabled = true;
+    this.setTestResult(resultEl, 'Testing…', 'pending');
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'testConnection',
+        apiEndpoint: settings.apiEndpoint,
+        apiModel: settings.apiModel,
+        apiKey: settings.apiKey,
+        firstLanguage: settings.firstLanguage,
+        secondLanguage: settings.secondLanguage
+      });
+
+      if (response && response.success) {
+        const sample = (response.translation || '').trim().slice(0, 80);
+        this.setTestResult(resultEl, `✓ Connected. Sample translation: "${sample}"`, 'success');
+      } else {
+        const message = response && response.error ? response.error : 'No response from background';
+        this.setTestResult(resultEl, `✕ ${message}`, 'error');
+      }
+    } catch (error) {
+      this.setTestResult(resultEl, `✕ ${error.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  setTestResult(el, message, type) {
+    if (!el) return;
+    el.textContent = message;
+    el.className = `test-result ${type}`;
   }
 
   handleApiTypeChange(event) {
     const apiType = event.target.value;
-    
+
     if (apiType === 'openai') {
       this.apiEndpointInput.value = this.API_ENDPOINTS.openai;
       document.getElementById('apiModel').value = this.DEFAULT_MODELS.openai;
@@ -128,6 +223,8 @@ class OptionsManager {
       this.apiEndpointInput.value = this.API_ENDPOINTS.ollama;
       document.getElementById('apiModel').value = this.DEFAULT_MODELS.ollama;
     }
+
+    this.updateModelPresets();
   }
 
   async handleSubmit(event) {
@@ -177,11 +274,13 @@ class OptionsManager {
       firstLanguage: formData.get('firstLanguage'),
       secondLanguage: formData.get('secondLanguage'),
       autoTranslate: formData.get('autoTranslate') === 'on',
+      historyEnabled: formData.get('historyEnabled') === 'on',
       apiEndpoint: formData.get('apiEndpoint'),
       apiKey: formData.get('apiKey'),
       apiModel: formData.get('apiModel'),
       translationStyle: formData.get('translationStyle'),
-      popupWidth: formData.get('popupWidth')
+      popupWidth: formData.get('popupWidth'),
+      glossary: formData.get('glossary') || ''
     };
   }
 
@@ -216,7 +315,7 @@ class OptionsManager {
       return 'gemini';
     } else if (endpoint.includes('anthropic')) {
       return 'claude';
-    } else if (endpoint.includes('localhost:11434') || endpoint.includes('/api/chat')) {
+    } else if (endpoint.includes(':11434') || endpoint.includes('ollama') || endpoint.includes('/api/chat')) {
       return 'ollama';
     }
     

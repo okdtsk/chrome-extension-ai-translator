@@ -8,7 +8,8 @@ class PopupManager {
       footerText: document.getElementById('footerText'),
       toggleBtn: document.getElementById('toggleExtension'),
       toggleText: document.getElementById('toggleText'),
-      openOptionsBtn: document.getElementById('openOptions')
+      openOptionsBtn: document.getElementById('openOptions'),
+      openHistoryBtn: document.getElementById('openHistory')
     };
     
     this.initialize();
@@ -69,7 +70,7 @@ class PopupManager {
       return 'Gemini';
     } else if (apiEndpoint.includes('anthropic')) {
       return 'Claude';
-    } else if (apiEndpoint.includes('localhost:11434') || apiEndpoint.includes('/api/chat')) {
+    } else if (apiEndpoint.includes(':11434') || apiEndpoint.includes('ollama') || apiEndpoint.includes('/api/chat')) {
       return 'Ollama';
     } else {
       return 'Custom';
@@ -79,6 +80,13 @@ class PopupManager {
   setupEventListeners() {
     this.elements.toggleBtn.addEventListener('click', this.handleToggle.bind(this));
     this.elements.openOptionsBtn.addEventListener('click', this.handleOpenOptions.bind(this));
+    if (this.elements.openHistoryBtn) {
+      this.elements.openHistoryBtn.addEventListener('click', this.handleOpenHistory.bind(this));
+    }
+  }
+
+  handleOpenHistory() {
+    chrome.tabs.create({ url: chrome.runtime.getURL('history.html') });
   }
 
   async handleToggle() {

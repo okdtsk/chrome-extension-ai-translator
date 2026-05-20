@@ -1,3 +1,20 @@
+// Pure helpers (provider detection, glossary parsing, prompt construction,
+// cache-key derivation, error message mapping) live in core.js so Node tests
+// can require() the same code the service worker uses.
+importScripts('core.js');
+
+const {
+  detectProvider: coreDetectProvider,
+  estimateMaxOutputTokens,
+  parseGlossary,
+  buildGlossarySection,
+  getSystemPrompt,
+  makeCacheKey,
+  parseOpenAIErrorMessage,
+  parseClaudeErrorMessage,
+  ERROR_MESSAGES
+} = self.TranslatorCore;
+
 const DEFAULT_SETTINGS = {
   enabled: true,
   autoTranslate: false,
@@ -5,7 +22,9 @@ const DEFAULT_SETTINGS = {
   secondLanguage: 'English',
   apiEndpoint: '',
   apiModel: 'gpt-3.5-turbo',
-  translationStyle: 'balanced' // literal, accurate, balanced, natural, creative
+  translationStyle: 'balanced', // literal, accurate, balanced, natural, creative
+  popupWidth: 'medium', // narrow, medium, wide
+  historyEnabled: false
 };
 
 // Encrypted storage manager for sensitive data using Web Crypto API
@@ -180,7 +199,7 @@ class EncryptedStorageManager {
           provider = 'gemini';
         } else if (result.apiEndpoint.includes('anthropic')) {
           provider = 'claude';
-        } else if (result.apiEndpoint.includes('localhost:11434') || result.apiEndpoint.includes('/api/chat')) {
+        } else if (result.apiEndpoint.includes(':11434') || result.apiEndpoint.includes('ollama') || result.apiEndpoint.includes('/api/chat')) {
           provider = 'ollama';
         }
       }
@@ -194,20 +213,6 @@ class EncryptedStorageManager {
       return true; // Migration successful
     }
     return false; // No migration needed
-  }
-
-  // Get all non-sensitive settings from local storage
-  async getNonSensitiveSettings() {
-    const settings = await chrome.storage.local.get([
-      'enabled',
-      'firstLanguage',
-      'secondLanguage',
-      'apiEndpoint',
-      'apiModel',
-      'autoTranslate',
-      'translationStyle'
-    ]);
-    return settings;
   }
 
   // Save non-sensitive settings to local storage
@@ -238,40 +243,90 @@ async function initializeEncryptedStorage() {
   }
 }
 
-const getSystemPrompt = (translationStyle) => {
-  const style = translationStyle || 'balanced';
-  const baseInstruction = 'IMPORTANT: Preserve the paragraph structure of the original text. Keep paragraph breaks where they appear in the source text. ';
-  
-  switch(style) {
-    case 'literal':
-      return baseInstruction + 'You are a strict literal translator. Translate the text word-for-word, preserving the exact structure and meaning. Do not adjust for grammar or natural flow. Return ONLY the translated text itself with preserved paragraph breaks.';
-    
-    case 'accurate':
-      return baseInstruction + 'You are a precise translator. Translate accurately with minimal adjustments only for basic grammar. Preserve the original structure as much as possible. Return ONLY the translated text itself with preserved paragraph breaks.';
-    
-    case 'balanced':
-      return baseInstruction + 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Maintain the original meaning but adjust grammar and expressions for clarity. Return ONLY the translated text itself with preserved paragraph breaks.';
-    
-    case 'natural':
-      return baseInstruction + 'You are a natural translator. Translate with focus on natural expression in the target language. Adapt phrases and idioms while preserving the core meaning. Return ONLY the translated text itself with preserved paragraph breaks.';
-    
-    case 'creative':
-      return baseInstruction + 'You are a creative translator. Translate with significant interpretive freedom, fully adapting cultural references, idioms, and expressions to best convey the spirit and emotional impact in the target language. Return ONLY the translated text itself with preserved paragraph breaks.';
-    
-    default:
-      return baseInstruction + 'You are a balanced translator. Translate the text accurately while ensuring it sounds natural in the target language. Return ONLY the translated text itself with preserved paragraph breaks.';
+// LRU cache for recent translations. Backed by chrome.storage.session so it
+// survives service-worker restarts within the browser session but resets when
+// the browser closes. Bypassed on retry so users can force a fresh call.
+class TranslationCache {
+  constructor(maxEntries = 100) {
+    this.maxEntries = maxEntries;
+    this.storageKey = 'translation_cache_v1';
   }
-};
 
-const ERROR_MESSAGES = {
-  NO_CONFIG: 'Please configure API settings in extension options',
-  NETWORK_ERROR: 'Network error. Please check your internet connection and API endpoint.',
-  AUTH_FAILED: 'Authentication failed. Please check your API key.',
-  INSUFFICIENT_QUOTA: 'No credits remaining. Please add credits to your OpenAI account.',
-  RATE_LIMIT: 'Rate limit exceeded. Please try again later.',
-  INVALID_RESPONSE: 'Unexpected response format from API.',
-  GENERIC_ERROR: 'Translation failed. Please check your settings and try again.'
-};
+  static makeKey(params) {
+    return makeCacheKey(params);
+  }
+
+  available() {
+    return !!(chrome.storage && chrome.storage.session);
+  }
+
+  async get(key) {
+    if (!this.available()) return null;
+    try {
+      const result = await chrome.storage.session.get(this.storageKey);
+      const entries = result[this.storageKey] || [];
+      const found = entries.find(e => e.key === key);
+      return found ? found.translation : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async set(key, translation) {
+    if (!this.available()) return;
+    try {
+      const result = await chrome.storage.session.get(this.storageKey);
+      let entries = result[this.storageKey] || [];
+      entries = entries.filter(e => e.key !== key);
+      entries.unshift({ key, translation, ts: Date.now() });
+      if (entries.length > this.maxEntries) {
+        entries.length = this.maxEntries;
+      }
+      await chrome.storage.session.set({ [this.storageKey]: entries });
+    } catch (error) {
+      // Cache failures must not break translation; swallow.
+    }
+  }
+}
+
+const translationCache = new TranslationCache();
+
+// Opt-in persistent history of completed translations, capped to keep storage
+// bounded. Lives in chrome.storage.local so it survives browser restarts and
+// can be browsed from the history page.
+const HISTORY_STORAGE_KEY = 'translation_history_v1';
+const HISTORY_MAX_ENTRIES = 100;
+
+class TranslationHistory {
+  async list() {
+    const result = await chrome.storage.local.get(HISTORY_STORAGE_KEY);
+    return result[HISTORY_STORAGE_KEY] || [];
+  }
+
+  async append(entry) {
+    const list = await this.list();
+    // Skip immediate duplicates so a Retry on the same selection does not
+    // bloat the history with identical rows.
+    if (list.length > 0 && list[0].original === entry.original && list[0].translation === entry.translation) {
+      return;
+    }
+    list.unshift(entry);
+    if (list.length > HISTORY_MAX_ENTRIES) list.length = HISTORY_MAX_ENTRIES;
+    await chrome.storage.local.set({ [HISTORY_STORAGE_KEY]: list });
+  }
+
+  async clear() {
+    await chrome.storage.local.remove(HISTORY_STORAGE_KEY);
+  }
+
+  async deleteById(id) {
+    const list = await this.list();
+    const next = list.filter(e => e.id !== id);
+    await chrome.storage.local.set({ [HISTORY_STORAGE_KEY]: next });
+  }
+}
+
+const translationHistory = new TranslationHistory();
 
 class TranslationService {
   constructor() {
@@ -279,44 +334,211 @@ class TranslationService {
   }
 
   async initializeSettings() {
-    // Initialize settings on every startup
+    // Read existing values for every key in DEFAULT_SETTINGS (except the
+    // sensitive apiKey, which is stored encrypted separately). Driving the
+    // read list from DEFAULT_SETTINGS means a new default cannot get silently
+    // overwritten on the next SW restart just because some hardcoded read
+    // list forgot about it.
     try {
       if (!encryptedStorage) {
         await initializeEncryptedStorage();
       }
-      
-      const result = await encryptedStorage.getNonSensitiveSettings();
+
+      const nonSensitiveKeys = Object.keys(DEFAULT_SETTINGS).filter(key => key !== 'apiKey');
+      const result = await chrome.storage.local.get(nonSensitiveKeys);
       const settings = { ...DEFAULT_SETTINGS, ...result };
-      
-      // Only update storage if there are missing keys (excluding apiKey)
-      const missingKeys = Object.keys(DEFAULT_SETTINGS).filter(key => key !== 'apiKey' && !(key in result));
+
+      const missingKeys = nonSensitiveKeys.filter(key => !(key in result));
       if (missingKeys.length > 0) {
-        await encryptedStorage.saveNonSensitiveSettings(settings);
+        // Only write the missing keys, not the entire settings blob. The
+        // previous behaviour rewrote every key with its current value, which
+        // is unnecessary I/O and risked clobbering concurrent writes.
+        const toSet = {};
+        for (const key of missingKeys) toSet[key] = settings[key];
+        await chrome.storage.local.set(toSet);
       }
     } catch (error) {
       console.error('Failed to initialize settings:', error);
-      // Fallback to defaults if storage fails
       const { apiKey, ...nonSensitiveDefaults } = DEFAULT_SETTINGS;
       await chrome.storage.local.set(nonSensitiveDefaults);
     }
-    
-    // Also handle fresh installs
-    chrome.runtime.onInstalled.addListener(async () => {
-      const { apiKey, ...nonSensitiveDefaults } = DEFAULT_SETTINGS;
-      await chrome.storage.local.set(nonSensitiveDefaults);
-    });
   }
 
-  async callOpenAIAPI(settings, messages) {
+  // Read a Server-Sent Events response body, invoking onEvent({event, data})
+  // for each event. Returns when the body ends. onEvent may throw to abort.
+  async readSSEStream(response, onEvent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary;
+      while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        let eventName = 'message';
+        const dataLines = [];
+        for (const line of rawEvent.split('\n')) {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+        }
+        if (dataLines.length === 0) continue;
+        const data = dataLines.join('\n');
+        if (data === '[DONE]') return;
+        onEvent({ event: eventName, data });
+      }
+    }
+  }
+
+  async callOpenAIAPIStream(settings, messages, maxOutputTokens, onDelta) {
     const headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${settings.apiKey || ''}`
     };
-    
     if (settings.organizationId) {
       headers['OpenAI-Organization'] = settings.organizationId;
     }
-    
+
+    const response = await fetch(settings.apiEndpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: settings.apiModel || 'gpt-3.5-turbo',
+        messages,
+        temperature: 0.3,
+        max_tokens: maxOutputTokens,
+        stream: true
+      })
+    });
+
+    if (!response.ok) {
+      let errorData = {};
+      try { errorData = await response.json(); } catch { /* ignore */ }
+      throw this.parseOpenAIError(errorData, response.status);
+    }
+
+    let full = '';
+    await this.readSSEStream(response, ({ data }) => {
+      try {
+        const parsed = JSON.parse(data);
+        const delta = parsed.choices?.[0]?.delta?.content;
+        if (delta) {
+          full += delta;
+          onDelta(delta);
+        }
+      } catch {
+        // Skip malformed events; OpenAI occasionally sends pings/keepalives.
+      }
+    });
+
+    if (!full) throw new Error(ERROR_MESSAGES.INVALID_RESPONSE);
+    return full;
+  }
+
+  async callClaudeAPIStream(settings, messages, maxOutputTokens, onDelta) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-api-key': settings.apiKey || '',
+      'anthropic-version': '2023-06-01'
+    };
+
+    const systemMessage = messages.find(m => m.role === 'system');
+    const userMessages = messages.filter(m => m.role !== 'system');
+
+    const response = await fetch(settings.apiEndpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: settings.apiModel || 'claude-haiku-4-5',
+        messages: userMessages.map(m => ({
+          role: m.role === 'user' ? 'user' : 'assistant',
+          content: m.content
+        })),
+        system: systemMessage ? systemMessage.content : undefined,
+        max_tokens: maxOutputTokens,
+        temperature: 0.3,
+        stream: true
+      })
+    });
+
+    if (!response.ok) {
+      let errorData = {};
+      try { errorData = await response.json(); } catch { /* ignore */ }
+      throw this.parseClaudeError(errorData, response.status);
+    }
+
+    let full = '';
+    await this.readSSEStream(response, ({ event, data }) => {
+      if (event !== 'content_block_delta') return;
+      try {
+        const parsed = JSON.parse(data);
+        const delta = parsed.delta?.text;
+        if (delta) {
+          full += delta;
+          onDelta(delta);
+        }
+      } catch {
+        // Skip malformed events.
+      }
+    });
+
+    if (!full) throw new Error(ERROR_MESSAGES.INVALID_RESPONSE);
+    return full;
+  }
+
+  // Dispatcher used by the streaming port handler. For providers without a
+  // streaming implementation (Gemini, Ollama), falls back to the non-stream
+  // call and emits one large delta at the end so callers can use one path.
+  async translateStreaming(text, settings, onDelta) {
+    const primary = settings.swap ? settings.secondLanguage : settings.firstLanguage;
+    const fallback = settings.swap ? settings.firstLanguage : settings.secondLanguage;
+    const glossaryRules = parseGlossary(settings.glossary);
+
+    const messages = [
+      { role: 'system', content: getSystemPrompt(settings.translationStyle, glossaryRules) },
+      { role: 'user', content: `Translate the following text to ${primary} (or to ${fallback} if the text is already in ${primary}):\n\n${text}` }
+    ];
+
+    const provider = coreDetectProvider(settings.apiEndpoint);
+    const maxOutputTokens = estimateMaxOutputTokens(text);
+
+    if (provider === 'gemini') {
+      const full = await this.callGeminiAPI(settings, messages, maxOutputTokens);
+      onDelta(full);
+      return full;
+    }
+    if (provider === 'ollama') {
+      const full = await this.callOllamaAPI(settings, messages);
+      onDelta(full);
+      return full;
+    }
+    if (provider === 'claude') {
+      return this.callClaudeAPIStream(settings, messages, maxOutputTokens, onDelta);
+    }
+    if (provider === 'openai') {
+      return this.callOpenAIAPIStream(settings, messages, maxOutputTokens, onDelta);
+    }
+    // Custom / unknown endpoints (provider === 'default') may be
+    // OpenAI-compatible proxies that don't support SSE. Use the
+    // non-streaming path so they don't regress, and emit one final delta so
+    // the consumer code stays uniform.
+    const full = await this.callOpenAIAPI(settings, messages, maxOutputTokens);
+    onDelta(full);
+    return full;
+  }
+
+  async callOpenAIAPI(settings, messages, maxOutputTokens) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${settings.apiKey || ''}`
+    };
+
+    if (settings.organizationId) {
+      headers['OpenAI-Organization'] = settings.organizationId;
+    }
+
     const response = await fetch(settings.apiEndpoint, {
       method: 'POST',
       headers: headers,
@@ -324,7 +546,7 @@ class TranslationService {
         model: settings.apiModel || 'gpt-3.5-turbo',
         messages: messages,
         temperature: 0.3,
-        max_tokens: 500
+        max_tokens: maxOutputTokens
       })
     });
 
@@ -341,7 +563,7 @@ class TranslationService {
     return responseData.choices[0].message.content;
   }
 
-  async callGeminiAPI(settings, messages) {
+  async callGeminiAPI(settings, messages, maxOutputTokens) {
     const apiKey = settings.apiKey || '';
     const model = settings.apiModel || 'gemini-pro';
     const url = `${settings.apiEndpoint}/${model}:generateContent?key=${apiKey}`;
@@ -361,7 +583,7 @@ class TranslationService {
         }],
         generationConfig: {
           temperature: 0.3,
-          maxOutputTokens: 500
+          maxOutputTokens: maxOutputTokens
         }
       })
     });
@@ -380,28 +602,28 @@ class TranslationService {
     return data.candidates[0].content.parts[0].text;
   }
 
-  async callClaudeAPI(settings, messages) {
+  async callClaudeAPI(settings, messages, maxOutputTokens) {
     const headers = {
       'Content-Type': 'application/json',
       'x-api-key': settings.apiKey || '',
       'anthropic-version': '2023-06-01'
     };
-    
+
     // Convert messages to Claude format
     const systemMessage = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
-    
+
     const response = await fetch(settings.apiEndpoint, {
       method: 'POST',
       headers: headers,
       body: JSON.stringify({
-        model: settings.apiModel || 'claude-3-haiku-20240307',
+        model: settings.apiModel || 'claude-haiku-4-5',
         messages: userMessages.map(m => ({
           role: m.role === 'user' ? 'user' : 'assistant',
           content: m.content
         })),
         system: systemMessage ? systemMessage.content : undefined,
-        max_tokens: 500,
+        max_tokens: maxOutputTokens,
         temperature: 0.3
       })
     });
@@ -420,29 +642,7 @@ class TranslationService {
   }
 
   parseClaudeError(errorData, status) {
-    if (errorData.error) {
-      const errorType = errorData.error.type;
-      const errorMessage = errorData.error.message;
-      
-      switch (errorType) {
-        case 'rate_limit_error':
-          return new Error(`${ERROR_MESSAGES.RATE_LIMIT} ${errorMessage}`);
-        case 'authentication_error':
-          return new Error(ERROR_MESSAGES.AUTH_FAILED);
-        case 'invalid_request_error':
-          return new Error(`Invalid request: ${errorMessage}`);
-        default:
-          return new Error(`API Error: ${errorMessage || errorType}`);
-      }
-    }
-    
-    if (status === 401) {
-      return new Error(ERROR_MESSAGES.AUTH_FAILED);
-    } else if (status === 429) {
-      return new Error(ERROR_MESSAGES.RATE_LIMIT);
-    }
-    
-    return new Error(ERROR_MESSAGES.GENERIC_ERROR);
+    return new Error(parseClaudeErrorMessage(errorData, status));
   }
 
   async callOllamaAPI(settings, messages) {
@@ -480,156 +680,306 @@ class TranslationService {
   }
 
   parseOpenAIError(errorData, status) {
-    if (errorData.error) {
-      const errorCode = errorData.error.code;
-      const errorMessage = errorData.error.message;
-      
-      switch (errorCode) {
-        case 'rate_limit_exceeded':
-          return new Error(`${ERROR_MESSAGES.RATE_LIMIT} ${errorMessage}`);
-        case 'insufficient_quota':
-          return new Error(ERROR_MESSAGES.INSUFFICIENT_QUOTA);
-        case 'invalid_api_key':
-          return new Error(ERROR_MESSAGES.AUTH_FAILED);
-        default:
-          return new Error(`API Error: ${errorMessage || errorCode}`);
-      }
-    }
-    
-    if (status === 401) {
-      return new Error(ERROR_MESSAGES.AUTH_FAILED);
-    } else if (status === 429) {
-      return new Error(ERROR_MESSAGES.RATE_LIMIT);
-    }
-    
-    return new Error(ERROR_MESSAGES.GENERIC_ERROR);
+    return new Error(parseOpenAIErrorMessage(errorData, status));
   }
 
   async translate(text, settings) {
+    // When swap is set, flip the language order in the user prompt so users
+    // can force the opposite direction if the model misjudged the source.
+    const primary = settings.swap ? settings.secondLanguage : settings.firstLanguage;
+    const fallback = settings.swap ? settings.firstLanguage : settings.secondLanguage;
+
+    const glossaryRules = parseGlossary(settings.glossary);
+
     const messages = [
       {
         role: 'system',
-        content: getSystemPrompt(settings.translationStyle)
+        content: getSystemPrompt(settings.translationStyle, glossaryRules)
       },
       {
         role: 'user',
-        content: `Translate the following text to ${settings.firstLanguage} (or to ${settings.secondLanguage} if the text is already in ${settings.firstLanguage}):\n\n${text}`
+        content: `Translate the following text to ${primary} (or to ${fallback} if the text is already in ${primary}):\n\n${text}`
       }
     ];
 
     const isGemini = settings.apiEndpoint.includes('generativelanguage.googleapis.com');
     const isClaude = settings.apiEndpoint.includes('anthropic.com');
-    const isOllama = settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('/api/chat');
-    
+    const isOllama = settings.apiEndpoint.includes(':11434') || settings.apiEndpoint.includes('ollama') || settings.apiEndpoint.includes('/api/chat');
+
+    const maxOutputTokens = estimateMaxOutputTokens(text);
+
     if (isGemini) {
-      return await this.callGeminiAPI(settings, messages);
+      return await this.callGeminiAPI(settings, messages, maxOutputTokens);
     } else if (isClaude) {
-      return await this.callClaudeAPI(settings, messages);
+      return await this.callClaudeAPI(settings, messages, maxOutputTokens);
     } else if (isOllama) {
       return await this.callOllamaAPI(settings, messages);
     } else {
-      return await this.callOpenAIAPI(settings, messages);
+      return await this.callOpenAIAPI(settings, messages, maxOutputTokens);
     }
   }
 
-  handleTranslationRequest(request, sender, sendResponse) {
-    if (request.action !== 'translate') return false;
+  detectProvider(endpoint) {
+    return coreDetectProvider(endpoint);
+  }
+  
+}
 
-    // Get settings with defaults
-    const keys = ['apiEndpoint', 'firstLanguage', 'secondLanguage', 'apiModel', 'translationStyle'];
+// Initialize the service lazily. Listeners must be registered synchronously at
+// the top level (MV3), but storage/crypto are async — so callers await
+// ensureInitialized() before touching encryptedStorage or translationService.
+let translationService = null;
+let initPromise = null;
+
+function ensureInitialized() {
+  if (!initPromise) {
+    initPromise = (async () => {
+      await initializeEncryptedStorage();
+      translationService = new TranslationService();
+    })().catch(error => {
+      // Reset so the next call retries instead of returning a poisoned promise
+      initPromise = null;
+      throw error;
+    });
+  }
+  return initPromise;
+}
+
+// Kick off init eagerly on script load, but don't depend on it completing
+// before the first message arrives.
+ensureInitialized();
+
+const CONTEXT_MENU_ID = 'ai-translator-translate-selection';
+
+// Register the right-click menu on install AND on every SW startup. Chrome
+// clears context menus when the extension is reloaded, so onInstalled alone
+// is not enough — re-register defensively.
+const registerContextMenu = () => {
+  try {
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_ID,
+      title: 'Translate selection',
+      contexts: ['selection']
+    }, () => {
+      // Swallow "duplicate id" errors from rapid SW restarts.
+      if (chrome.runtime.lastError) {
+        // no-op
+      }
+    });
+  } catch (error) {
+    // Ignore — context menus may not be available in some test environments.
+  }
+};
+
+chrome.runtime.onInstalled.addListener(async (details) => {
+  registerContextMenu();
+
+  if (details.reason !== 'install') return;
+
+  const { apiKey, ...defaults } = DEFAULT_SETTINGS;
+  const keys = Object.keys(defaults);
+  const existing = await chrome.storage.local.get(keys);
+  const toSet = {};
+  for (const key of keys) {
+    if (!(key in existing)) {
+      toSet[key] = defaults[key];
+    }
+  }
+  if (Object.keys(toSet).length > 0) {
+    await chrome.storage.local.set(toSet);
+  }
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  registerContextMenu();
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== CONTEXT_MENU_ID) return;
+  if (!tab || typeof tab.id !== 'number') return;
+  chrome.tabs.sendMessage(tab.id, {
+    action: 'triggerTranslation',
+    selectionText: info.selectionText || ''
+  }).catch(() => {
+    // Tab may not have the content script (e.g. chrome:// pages).
+  });
+});
+
+if (chrome.commands && chrome.commands.onCommand) {
+  chrome.commands.onCommand.addListener((command, tab) => {
+    if (command !== 'translate-selection') return;
+    if (!tab || typeof tab.id !== 'number') return;
+    chrome.tabs.sendMessage(tab.id, { action: 'triggerTranslation' }).catch(() => {
+      // Same as above — silently ignore restricted pages.
+    });
+  });
+}
+
+// Long-lived port so the service worker can stream translation deltas back to
+// the content script. The content script opens a fresh port per translation;
+// we resolve settings, check the cache, then call translateStreaming.
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'translate') return;
+
+  let cancelled = false;
+  port.onDisconnect.addListener(() => { cancelled = true; });
+
+  const safePost = (msg) => {
+    if (cancelled) return;
+    try { port.postMessage(msg); } catch { /* port closed */ }
+  };
+
+  port.onMessage.addListener(async (request) => {
+    if (!request || typeof request.text !== 'string') return;
+
+    try {
+      await ensureInitialized();
+    } catch (error) {
+      safePost({ type: 'error', error: error.message || 'Translation service unavailable' });
+      try { port.disconnect(); } catch {}
+      return;
+    }
+
+    const keys = ['apiEndpoint', 'firstLanguage', 'secondLanguage', 'apiModel', 'translationStyle', 'glossary'];
     const defaults = {
       firstLanguage: DEFAULT_SETTINGS.firstLanguage,
       secondLanguage: DEFAULT_SETTINGS.secondLanguage,
       apiModel: DEFAULT_SETTINGS.apiModel,
       translationStyle: DEFAULT_SETTINGS.translationStyle
     };
-    
-    chrome.storage.local.get(keys, async (result) => {
-      const settings = { ...defaults, ...result };
-      
-      // Get API key from encrypted storage
-      if (encryptedStorage) {
-        const provider = this.detectProvider(settings.apiEndpoint);
-        settings.apiKey = await encryptedStorage.getApiKey(provider);
-      }
-      
-      if (!settings.apiEndpoint || !settings.apiKey) {
-        sendResponse({ error: ERROR_MESSAGES.NO_CONFIG });
-        return;
-      }
 
-      try {
-        const translation = await this.translate(request.text, settings);
-        sendResponse({ translation });
-      } catch (error) {
-        let errorMessage = error.message;
-        
-        if (error.message.includes('Failed to fetch')) {
-          errorMessage = ERROR_MESSAGES.NETWORK_ERROR;
-        }
-        
-        sendResponse({ error: errorMessage });
-      }
+    const stored = await chrome.storage.local.get(keys);
+    const settings = { ...defaults, ...stored };
+    const provider = translationService.detectProvider(settings.apiEndpoint);
+    settings.apiKey = await encryptedStorage.getApiKey(provider);
+
+    if (!settings.apiEndpoint || (provider !== 'ollama' && !settings.apiKey)) {
+      safePost({ type: 'error', error: ERROR_MESSAGES.NO_CONFIG });
+      try { port.disconnect(); } catch {}
+      return;
+    }
+
+    settings.swap = Boolean(request.swap);
+    const cacheKey = TranslationCache.makeKey({
+      text: request.text,
+      firstLanguage: settings.firstLanguage,
+      secondLanguage: settings.secondLanguage,
+      translationStyle: settings.translationStyle,
+      apiModel: settings.apiModel,
+      apiEndpoint: settings.apiEndpoint,
+      swap: settings.swap,
+      glossary: settings.glossary
     });
 
-    return true; // Will respond asynchronously
-  }
-  
-  detectProvider(endpoint) {
-    if (!endpoint) return 'default';
-    
-    if (endpoint.includes('openai')) {
-      return 'openai';
-    } else if (endpoint.includes('generativelanguage.googleapis.com')) {
-      return 'gemini';
-    } else if (endpoint.includes('anthropic')) {
-      return 'claude';
-    } else if (endpoint.includes('localhost:11434') || endpoint.includes('/api/chat')) {
-      return 'ollama';
+    if (!request.retry) {
+      const cached = await translationCache.get(cacheKey);
+      if (cached) {
+        safePost({ type: 'cached', translation: cached });
+        try { port.disconnect(); } catch {}
+        return;
+      }
     }
-    
-    return 'default';
-  }
-  
-}
 
-// Initialize the service
-let translationService = null;
+    try {
+      const full = await translationService.translateStreaming(request.text, settings, (delta) => {
+        safePost({ type: 'delta', text: delta });
+      });
 
-// Initialize everything when the background script starts
-(async () => {
-  await initializeEncryptedStorage();
-  translationService = new TranslationService();
-})();
+      if (cancelled) return;
 
-// Set up message listener
+      await translationCache.set(cacheKey, full);
+      const { historyEnabled = false } = await chrome.storage.local.get('historyEnabled');
+      if (historyEnabled) {
+        await translationHistory.append({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          original: request.text,
+          translation: full,
+          firstLanguage: settings.firstLanguage,
+          secondLanguage: settings.secondLanguage,
+          translationStyle: settings.translationStyle,
+          apiModel: settings.apiModel,
+          swap: settings.swap,
+          provider,
+          timestamp: Date.now()
+        });
+      }
+
+      safePost({ type: 'done', translation: full });
+      try { port.disconnect(); } catch {}
+    } catch (error) {
+      let errorMessage = error.message || ERROR_MESSAGES.GENERIC_ERROR;
+      if (errorMessage.includes('Failed to fetch')) {
+        errorMessage = ERROR_MESSAGES.NETWORK_ERROR;
+      }
+      safePost({ type: 'error', error: errorMessage });
+      try { port.disconnect(); } catch {}
+    }
+  });
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'storeApiKey') {
-    // Handle API key storage
-    if (encryptedStorage) {
-      encryptedStorage.storeApiKey(request.provider, request.apiKey).then(() => {
-        sendResponse({ success: true });
-      }).catch(error => {
-        sendResponse({ success: false, error: error.message });
-      });
-    } else {
-      sendResponse({ success: false, error: 'Encrypted storage not initialized' });
-    }
+    ensureInitialized()
+      .then(() => encryptedStorage.storeApiKey(request.provider, request.apiKey))
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   } else if (request.action === 'checkApiKey') {
-    // Check if API key exists
-    if (encryptedStorage) {
-      encryptedStorage.hasApiKey(request.provider).then(hasKey => {
-        sendResponse({ hasApiKey: hasKey });
-      });
-    } else {
-      sendResponse({ hasApiKey: false });
-    }
+    ensureInitialized()
+      .then(() => encryptedStorage.hasApiKey(request.provider))
+      .then(hasKey => sendResponse({ hasApiKey: hasKey }))
+      .catch(() => sendResponse({ hasApiKey: false }));
     return true;
-  } else if (translationService) {
-    return translationService.handleTranslationRequest(request, sender, sendResponse);
+  } else if (request.action === 'getHistory') {
+    translationHistory.list()
+      .then(entries => sendResponse({ entries }))
+      .catch(error => sendResponse({ entries: [], error: error.message }));
+    return true;
+  } else if (request.action === 'clearHistory') {
+    translationHistory.clear()
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'deleteHistoryEntry') {
+    translationHistory.deleteById(request.id)
+      .then(() => sendResponse({ success: true }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'testConnection') {
+    ensureInitialized()
+      .then(async () => {
+        const provider = translationService.detectProvider(request.apiEndpoint);
+        let apiKey = request.apiKey;
+        if (!apiKey) {
+          apiKey = await encryptedStorage.getApiKey(provider);
+        }
+        if (!request.apiEndpoint || (provider !== 'ollama' && !apiKey)) {
+          sendResponse({ success: false, error: ERROR_MESSAGES.NO_CONFIG });
+          return;
+        }
+        const settings = {
+          apiEndpoint: request.apiEndpoint,
+          apiModel: request.apiModel,
+          apiKey,
+          firstLanguage: request.firstLanguage || DEFAULT_SETTINGS.firstLanguage,
+          secondLanguage: request.secondLanguage || DEFAULT_SETTINGS.secondLanguage,
+          translationStyle: 'balanced'
+        };
+        try {
+          const translation = await translationService.translate('Hello', settings);
+          sendResponse({ success: true, translation });
+        } catch (error) {
+          let errorMessage = error.message;
+          if (errorMessage && errorMessage.includes('Failed to fetch')) {
+            errorMessage = ERROR_MESSAGES.NETWORK_ERROR;
+          }
+          sendResponse({ success: false, error: errorMessage || ERROR_MESSAGES.GENERIC_ERROR });
+        }
+      })
+      .catch(error => sendResponse({ success: false, error: error.message || 'Translation service unavailable' }));
+    return true;
   }
-  
+
   return false;
 });
 
