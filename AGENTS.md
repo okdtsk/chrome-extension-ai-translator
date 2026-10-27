@@ -86,7 +86,7 @@ Settings stored in Chrome Storage Local:
 }
 // API keys are stored separately with encryption:
 // encrypted_api_key_profile_[profileId]: { data: number[], iv: number[] }
-// (legacy encrypted_api_key_[provider] is used as a fallback for migrated profiles)
+// (legacy encrypted_api_key_[provider] is a fallback for the migrated "default" profile only)
 ```
 
 ## Key Implementation Details

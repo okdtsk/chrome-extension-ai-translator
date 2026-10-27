@@ -298,3 +298,20 @@ test('normalizeProfiles', async (t) => {
     assert.deepEqual(result.profiles.map(profile => profile.id), ['ok']);
   });
 });
+
+test('keyLookupIds', async (t) => {
+  const openai = 'https://api.openai.com/v1/chat/completions';
+
+  await t.test('a regular profile only looks at its own key', () => {
+    assert.deepEqual(core.keyLookupIds('work', openai), ['profile_work']);
+  });
+
+  await t.test('the migrated default profile falls back to the legacy provider key', () => {
+    assert.deepEqual(core.keyLookupIds('default', openai), ['profile_default', 'openai']);
+  });
+
+  await t.test('no profile at all uses the legacy provider key', () => {
+    assert.deepEqual(core.keyLookupIds('', openai), ['openai']);
+    assert.deepEqual(core.keyLookupIds(undefined, 'http://localhost:11434/api/chat'), ['ollama']);
+  });
+});

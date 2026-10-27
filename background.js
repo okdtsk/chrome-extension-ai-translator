@@ -5,7 +5,7 @@ importScripts('core.js');
 
 const {
   detectProvider: coreDetectProvider,
-  profileKeyId,
+  keyLookupIds,
   estimateMaxOutputTokens,
   parseGlossary,
   buildGlossarySection,
@@ -173,19 +173,21 @@ class EncryptedStorageManager {
     }
   }
 
-  // Look up the key for a profile, falling back to the legacy per-provider
-  // key that single-config installs stored before profiles existed.
+  // Look up the key for a profile. Only the migrated 'default' profile falls
+  // back to the legacy per-provider key (see keyLookupIds).
   async getApiKeyForProfile(profileId, endpoint) {
-    if (profileId) {
-      const profileKey = await this.getApiKey(profileKeyId(profileId));
-      if (profileKey) return profileKey;
+    for (const id of keyLookupIds(profileId, endpoint)) {
+      const apiKey = await this.getApiKey(id);
+      if (apiKey) return apiKey;
     }
-    return this.getApiKey(coreDetectProvider(endpoint));
+    return null;
   }
 
   async hasApiKeyForProfile(profileId, endpoint) {
-    if (profileId && await this.hasApiKey(profileKeyId(profileId))) return true;
-    return this.hasApiKey(coreDetectProvider(endpoint));
+    for (const id of keyLookupIds(profileId, endpoint)) {
+      if (await this.hasApiKey(id)) return true;
+    }
+    return false;
   }
 
   // Check if API key exists

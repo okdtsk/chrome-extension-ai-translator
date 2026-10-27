@@ -35,8 +35,9 @@ class PopupManager {
       'activeProfileId'
     ]);
 
-    this.profiles = normalizeProfiles(settings).profiles;
-    this.renderProfiles(normalizeProfiles(settings).activeProfileId);
+    const { profiles, activeProfileId } = normalizeProfiles(settings);
+    this.profiles = profiles;
+    this.renderProfiles(activeProfileId);
 
     this.updateUI(settings);
   }

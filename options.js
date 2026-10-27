@@ -1,4 +1,4 @@
-const { PROVIDER_LABELS, profileKeyId, createProfileId, normalizeProfiles } = TranslatorCore;
+const { PROVIDER_LABELS, detectProvider, profileKeyId, createProfileId, normalizeProfiles } = TranslatorCore;
 
 // Note about API key handling
 const API_KEY_NOTE = 'Your API key is encrypted and stored locally on this device. It is not synced across devices for security reasons.';
@@ -170,6 +170,14 @@ class OptionsManager {
         provider: profileKeyId(profile.id),
         apiKey: ''
       });
+      // The migrated profile also owns the legacy per-provider key.
+      if (profile.id === 'default') {
+        await chrome.runtime.sendMessage({
+          action: 'storeApiKey',
+          provider: detectProvider(profile.apiEndpoint),
+          apiKey: ''
+        });
+      }
 
       this.profiles = this.profiles.filter(item => item.id !== profile.id);
       if (this.activeProfileId === profile.id) {
@@ -257,6 +265,10 @@ class OptionsManager {
     document.getElementById('newProfileBtn').addEventListener('click', this.handleNewProfile.bind(this));
     document.getElementById('deleteProfileBtn').addEventListener('click', this.handleDeleteProfile.bind(this));
 
+    // The toolbar popup can switch the active profile while this page is open;
+    // follow it so a later Save does not switch back to a stale profile.
+    chrome.storage.onChanged.addListener(this.handleStorageChanged.bind(this));
+
     const testBtn = document.getElementById('testConnectionBtn');
     if (testBtn) {
       testBtn.addEventListener('click', this.handleTestConnection.bind(this));
@@ -266,6 +278,20 @@ class OptionsManager {
     if (clearHistoryBtn) {
       clearHistoryBtn.addEventListener('click', this.handleClearHistory.bind(this));
     }
+  }
+
+  handleStorageChanged(changes, areaName) {
+    if (areaName !== 'local' || !changes.activeProfileId) return;
+    const next = changes.activeProfileId.newValue || '';
+    if (next === this.activeProfileId) return;
+
+    this.activeProfileId = next;
+    this.renderProfileSelect();
+
+    const makeActive = document.getElementById('makeActive');
+    const isActive = this.selectedProfileId === this.activeProfileId;
+    makeActive.disabled = isActive;
+    makeActive.checked = isActive;
   }
 
   async handleClearHistory() {
@@ -331,16 +357,19 @@ class OptionsManager {
 
   handleApiTypeChange(event) {
     const apiType = event.target.value;
-    if (!this.API_ENDPOINTS[apiType]) return;
 
-    this.apiEndpointInput.value = this.API_ENDPOINTS[apiType];
-    document.getElementById('apiModel').value = this.DEFAULT_MODELS[apiType];
+    // "Custom" has no preset endpoint/model; leave the user's values alone but
+    // still refresh the model suggestions below.
+    if (this.API_ENDPOINTS[apiType]) {
+      this.apiEndpointInput.value = this.API_ENDPOINTS[apiType];
+      document.getElementById('apiModel').value = this.DEFAULT_MODELS[apiType];
 
-    // Rename only while the name is still an auto-generated one.
-    const nameInput = document.getElementById('profileName');
-    const current = nameInput.value.trim();
-    if (!current || current === 'New profile' || Object.values(PROVIDER_LABELS).includes(current)) {
-      nameInput.value = PROVIDER_LABELS[apiType];
+      // Rename only while the name is still an auto-generated one.
+      const nameInput = document.getElementById('profileName');
+      const current = nameInput.value.trim();
+      if (!current || current === 'New profile' || Object.values(PROVIDER_LABELS).includes(current)) {
+        nameInput.value = PROVIDER_LABELS[apiType];
+      }
     }
 
     this.updateModelPresets();

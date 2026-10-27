@@ -39,6 +39,17 @@
   // provider (e.g. two OpenAI accounts) can hold different keys.
   const profileKeyId = (profileId) => `profile_${profileId}`;
 
+  // Storage ids to try, in order, when looking up a profile's API key. Only the
+  // migrated 'default' profile (or no profile at all, on installs that have not
+  // saved one yet) may fall back to the legacy per-provider key; any other
+  // profile must have its own key.
+  const keyLookupIds = (profileId, endpoint) => {
+    const legacyId = detectProvider(endpoint);
+    if (!profileId) return [legacyId];
+    if (profileId === 'default') return [profileKeyId(profileId), legacyId];
+    return [profileKeyId(profileId)];
+  };
+
   const createProfileId = () =>
     `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
@@ -196,6 +207,7 @@
     PROVIDER_LABELS,
     detectProvider,
     profileKeyId,
+    keyLookupIds,
     createProfileId,
     normalizeProfiles,
     estimateMaxOutputTokens,
