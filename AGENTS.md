@@ -76,14 +76,17 @@ Settings stored in Chrome Storage Local:
   enabled: boolean,
   firstLanguage: string,
   secondLanguage: string,
-  apiEndpoint: string,
-  apiModel: string,
+  apiEndpoint: string,   // mirror of the active profile
+  apiModel: string,      // mirror of the active profile
+  apiProfiles: [{ id, name, apiEndpoint, apiModel }],
+  activeProfileId: string,
   autoTranslate: boolean,
   translationStyle: string,
   popupWidth: string  // 'narrow' | 'medium' | 'wide'
 }
 // API keys are stored separately with encryption:
-// encrypted_api_key_[provider]: { data: number[], iv: number[] }
+// encrypted_api_key_profile_[profileId]: { data: number[], iv: number[] }
+// (legacy encrypted_api_key_[provider] is used as a fallback for migrated profiles)
 ```
 
 ## Key Implementation Details

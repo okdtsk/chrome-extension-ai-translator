@@ -1,9 +1,13 @@
+const { normalizeProfiles } = TranslatorCore;
+
 class PopupManager {
   constructor() {
     this.elements = {
       status: document.getElementById('status'),
       firstLanguage: document.getElementById('firstLanguage'),
       apiType: document.getElementById('apiType'),
+      profileRow: document.getElementById('profileRow'),
+      profileSelect: document.getElementById('profileSelect'),
       autoTranslate: document.getElementById('autoTranslate'),
       footerText: document.getElementById('footerText'),
       toggleBtn: document.getElementById('toggleExtension'),
@@ -25,8 +29,14 @@ class PopupManager {
       'enabled', 
       'firstLanguage',
       'autoTranslate',
-      'apiEndpoint'
+      'apiEndpoint',
+      'apiModel',
+      'apiProfiles',
+      'activeProfileId'
     ]);
+
+    this.profiles = normalizeProfiles(settings).profiles;
+    this.renderProfiles(normalizeProfiles(settings).activeProfileId);
 
     this.updateUI(settings);
   }
@@ -59,6 +69,35 @@ class PopupManager {
     this.elements.toggleBtn.classList.toggle('disabled', enabled);
   }
 
+  // The switcher only appears once there is something to switch between.
+  renderProfiles(activeProfileId) {
+    const { profileRow, profileSelect } = this.elements;
+    profileRow.hidden = this.profiles.length < 2;
+    profileSelect.innerHTML = '';
+    for (const profile of this.profiles) {
+      const option = document.createElement('option');
+      option.value = profile.id;
+      option.textContent = profile.name;
+      profileSelect.appendChild(option);
+    }
+    profileSelect.value = activeProfileId;
+  }
+
+  async handleProfileChange(event) {
+    const profile = this.profiles.find(item => item.id === event.target.value);
+    if (!profile) return;
+    try {
+      await chrome.storage.local.set({
+        activeProfileId: profile.id,
+        apiEndpoint: profile.apiEndpoint,
+        apiModel: profile.apiModel
+      });
+    } catch (error) {
+      console.error('Failed to switch profile:', error);
+    }
+    await this.loadStatus();
+  }
+
   detectApiType(apiEndpoint) {
     if (!apiEndpoint) {
       return 'Not configured';
@@ -79,6 +118,7 @@ class PopupManager {
 
   setupEventListeners() {
     this.elements.toggleBtn.addEventListener('click', this.handleToggle.bind(this));
+    this.elements.profileSelect.addEventListener('change', this.handleProfileChange.bind(this));
     this.elements.openOptionsBtn.addEventListener('click', this.handleOpenOptions.bind(this));
     if (this.elements.openHistoryBtn) {
       this.elements.openHistoryBtn.addEventListener('click', this.handleOpenHistory.bind(this));

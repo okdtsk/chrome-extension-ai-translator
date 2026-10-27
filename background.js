@@ -5,6 +5,7 @@ importScripts('core.js');
 
 const {
   detectProvider: coreDetectProvider,
+  profileKeyId,
   estimateMaxOutputTokens,
   parseGlossary,
   buildGlossarySection,
@@ -170,6 +171,21 @@ class EncryptedStorageManager {
       await chrome.storage.local.remove(`encrypted_api_key_${provider}`);
       return null;
     }
+  }
+
+  // Look up the key for a profile, falling back to the legacy per-provider
+  // key that single-config installs stored before profiles existed.
+  async getApiKeyForProfile(profileId, endpoint) {
+    if (profileId) {
+      const profileKey = await this.getApiKey(profileKeyId(profileId));
+      if (profileKey) return profileKey;
+    }
+    return this.getApiKey(coreDetectProvider(endpoint));
+  }
+
+  async hasApiKeyForProfile(profileId, endpoint) {
+    if (profileId && await this.hasApiKey(profileKeyId(profileId))) return true;
+    return this.hasApiKey(coreDetectProvider(endpoint));
   }
 
   // Check if API key exists
@@ -840,7 +856,7 @@ chrome.runtime.onConnect.addListener((port) => {
       return;
     }
 
-    const keys = ['apiEndpoint', 'firstLanguage', 'secondLanguage', 'apiModel', 'translationStyle', 'glossary'];
+    const keys = ['apiEndpoint', 'activeProfileId', 'firstLanguage', 'secondLanguage', 'apiModel', 'translationStyle', 'glossary'];
     const defaults = {
       firstLanguage: DEFAULT_SETTINGS.firstLanguage,
       secondLanguage: DEFAULT_SETTINGS.secondLanguage,
@@ -851,7 +867,7 @@ chrome.runtime.onConnect.addListener((port) => {
     const stored = await chrome.storage.local.get(keys);
     const settings = { ...defaults, ...stored };
     const provider = translationService.detectProvider(settings.apiEndpoint);
-    settings.apiKey = await encryptedStorage.getApiKey(provider);
+    settings.apiKey = await encryptedStorage.getApiKeyForProfile(settings.activeProfileId, settings.apiEndpoint);
 
     if (!settings.apiEndpoint || (provider !== 'ollama' && !settings.apiKey)) {
       safePost({ type: 'error', error: ERROR_MESSAGES.NO_CONFIG });
@@ -926,7 +942,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   } else if (request.action === 'checkApiKey') {
     ensureInitialized()
-      .then(() => encryptedStorage.hasApiKey(request.provider))
+      .then(() => request.profileId
+        ? encryptedStorage.hasApiKeyForProfile(request.profileId, request.apiEndpoint)
+        : encryptedStorage.hasApiKey(request.provider))
       .then(hasKey => sendResponse({ hasApiKey: hasKey }))
       .catch(() => sendResponse({ hasApiKey: false }));
     return true;
@@ -951,7 +969,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const provider = translationService.detectProvider(request.apiEndpoint);
         let apiKey = request.apiKey;
         if (!apiKey) {
-          apiKey = await encryptedStorage.getApiKey(provider);
+          apiKey = await encryptedStorage.getApiKeyForProfile(request.profileId, request.apiEndpoint);
         }
         if (!request.apiEndpoint || (provider !== 'ollama' && !apiKey)) {
           sendResponse({ success: false, error: ERROR_MESSAGES.NO_CONFIG });
