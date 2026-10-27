@@ -1,4 +1,4 @@
-const { PROVIDER_LABELS, detectProvider, profileKeyId, createProfileId, normalizeProfiles } = TranslatorCore;
+const { PROVIDER_LABELS, detectProvider, profileKeyId, canDeleteProfile, createProfileId, normalizeProfiles } = TranslatorCore;
 
 // Note about API key handling
 const API_KEY_NOTE = 'Your API key is encrypted and stored locally on this device. It is not synced across devices for security reasons.';
@@ -160,6 +160,14 @@ class OptionsManager {
   async handleDeleteProfile() {
     if (this.profiles.length <= 1) return;
     const profile = this.getSelectedProfile();
+
+    // Unsaved drafts do not count: deleting the last saved profile would leave
+    // translations with no usable configuration.
+    if (!canDeleteProfile(this.profiles, profile.id)) {
+      this.showStatus('Keep at least one saved profile. Save another one before deleting this one.', 'error');
+      return;
+    }
+
     if (!confirm(`Delete profile "${profile.name}" and its stored API key?`)) {
       return;
     }
@@ -181,10 +189,12 @@ class OptionsManager {
 
       this.profiles = this.profiles.filter(item => item.id !== profile.id);
       if (this.activeProfileId === profile.id) {
-        this.activeProfileId = this.profiles[0].id;
+        // Pick a saved profile, not an unsaved draft, as the replacement.
+        const replacement = this.profiles.find(item => item.apiEndpoint) || this.profiles[0];
+        this.activeProfileId = replacement.id;
       }
-      this.selectedProfileId = this.activeProfileId;
       await this.persistProfiles();
+      this.selectedProfileId = this.activeProfileId || this.profiles[0].id;
       this.renderProfileSelect();
       this.loadProfileIntoForm(this.getSelectedProfile());
       this.showStatus('Profile deleted', 'success');
@@ -199,11 +209,15 @@ class OptionsManager {
     const saved = this.profiles.filter(profile => profile.apiEndpoint);
     const active = saved.find(profile => profile.id === this.activeProfileId) || saved[0];
     const update = { apiProfiles: saved, activeProfileId: active ? active.id : '' };
+    this.activeProfileId = update.activeProfileId;
     if (active) {
       update.apiEndpoint = active.apiEndpoint;
       update.apiModel = active.apiModel;
+    } else {
+      // No saved profile left: drop the mirrored keys too, otherwise
+      // normalizeProfiles would resurrect a profile from them on next load.
+      await chrome.storage.local.remove(['apiEndpoint', 'apiModel']);
     }
-    this.activeProfileId = update.activeProfileId;
     await chrome.storage.local.set(update);
   }
 

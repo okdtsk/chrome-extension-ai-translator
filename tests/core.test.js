@@ -315,3 +315,28 @@ test('keyLookupIds', async (t) => {
     assert.deepEqual(core.keyLookupIds(undefined, 'http://localhost:11434/api/chat'), ['ollama']);
   });
 });
+
+test('canDeleteProfile', async (t) => {
+  const saved = (id) => ({ id, name: id, apiEndpoint: 'https://x.example', apiModel: '' });
+  const draft = (id) => ({ id, name: id, apiEndpoint: '', apiModel: '' });
+
+  await t.test('refuses to delete the only profile', () => {
+    assert.equal(core.canDeleteProfile([saved('a')], 'a'), false);
+  });
+
+  await t.test('refuses to delete the last saved profile when only drafts remain', () => {
+    assert.equal(core.canDeleteProfile([saved('a'), draft('d')], 'a'), false);
+  });
+
+  await t.test('allows deleting a saved profile when another saved one remains', () => {
+    assert.equal(core.canDeleteProfile([saved('a'), saved('b')], 'a'), true);
+  });
+
+  await t.test('allows deleting a draft next to a saved profile', () => {
+    assert.equal(core.canDeleteProfile([saved('a'), draft('d')], 'd'), true);
+  });
+
+  await t.test('returns false for an unknown id', () => {
+    assert.equal(core.canDeleteProfile([saved('a'), saved('b')], 'zzz'), false);
+  });
+});

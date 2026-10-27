@@ -50,6 +50,16 @@
     return [profileKeyId(profileId)];
   };
 
+  // A saved profile (one with an endpoint) may be deleted only if another saved
+  // profile remains. Unsaved drafts never count, and deleting a draft is always
+  // allowed as long as it is not the only profile.
+  const canDeleteProfile = (profiles, profileId) => {
+    const target = profiles.find(profile => profile.id === profileId);
+    if (!target || profiles.length <= 1) return false;
+    if (!target.apiEndpoint) return true;
+    return profiles.some(profile => profile.id !== profileId && profile.apiEndpoint);
+  };
+
   const createProfileId = () =>
     `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
@@ -208,6 +218,7 @@
     detectProvider,
     profileKeyId,
     keyLookupIds,
+    canDeleteProfile,
     createProfileId,
     normalizeProfiles,
     estimateMaxOutputTokens,
