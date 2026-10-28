@@ -27,6 +27,76 @@
     return 'default';
   };
 
+  const PROVIDER_LABELS = {
+    openai: 'OpenAI',
+    gemini: 'Gemini',
+    claude: 'Claude',
+    ollama: 'Ollama',
+    default: 'Custom'
+  };
+
+  // Encrypted API keys are stored per profile so two profiles on the same
+  // provider (e.g. two OpenAI accounts) can hold different keys.
+  const profileKeyId = (profileId) => `profile_${profileId}`;
+
+  // Storage ids to try, in order, when looking up a profile's API key. Only the
+  // migrated 'default' profile (or no profile at all, on installs that have not
+  // saved one yet) may fall back to the legacy per-provider key; any other
+  // profile must have its own key.
+  const keyLookupIds = (profileId, endpoint) => {
+    const legacyId = detectProvider(endpoint);
+    if (!profileId) return [legacyId];
+    if (profileId === 'default') return [profileKeyId(profileId), legacyId];
+    return [profileKeyId(profileId)];
+  };
+
+  // A saved profile (one with an endpoint) may be deleted only if another saved
+  // profile remains. Unsaved drafts never count, and deleting a draft is always
+  // allowed as long as it is not the only profile.
+  const canDeleteProfile = (profiles, profileId) => {
+    const target = profiles.find(profile => profile.id === profileId);
+    if (!target || profiles.length <= 1) return false;
+    if (!target.apiEndpoint) return true;
+    return profiles.some(profile => profile.id !== profileId && profile.apiEndpoint);
+  };
+
+  const createProfileId = () =>
+    `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+  const isValidProfile = (profile) =>
+    Boolean(profile && typeof profile.id === 'string' && profile.id &&
+      typeof profile.apiEndpoint === 'string');
+
+  // Resolve the stored profile list. Users upgrading from the single-config
+  // layout get one profile built from their flat apiEndpoint/apiModel, with
+  // the id 'default' so the key lookup can fall back to the legacy
+  // per-provider key.
+  const normalizeProfiles = (stored) => {
+    const source = stored || {};
+    const profiles = Array.isArray(source.apiProfiles)
+      ? source.apiProfiles.filter(isValidProfile)
+      : [];
+
+    if (profiles.length === 0) {
+      if (!source.apiEndpoint) return { profiles: [], activeProfileId: '' };
+      const provider = detectProvider(source.apiEndpoint);
+      return {
+        profiles: [{
+          id: 'default',
+          name: PROVIDER_LABELS[provider],
+          apiEndpoint: source.apiEndpoint,
+          apiModel: source.apiModel || ''
+        }],
+        activeProfileId: 'default'
+      };
+    }
+
+    const active = profiles.some(profile => profile.id === source.activeProfileId)
+      ? source.activeProfileId
+      : profiles[0].id;
+    return { profiles, activeProfileId: active };
+  };
+
   const estimateMaxOutputTokens = (text) => {
     const length = text ? text.length : 0;
     const estimate = Math.ceil(length * 1.5) + 256;
@@ -144,7 +214,13 @@
     MAX_OUTPUT_TOKENS_CAP,
     MIN_OUTPUT_TOKENS,
     ERROR_MESSAGES,
+    PROVIDER_LABELS,
     detectProvider,
+    profileKeyId,
+    keyLookupIds,
+    canDeleteProfile,
+    createProfileId,
+    normalizeProfiles,
     estimateMaxOutputTokens,
     parseGlossary,
     buildGlossarySection,

@@ -1,3 +1,5 @@
+const { PROVIDER_LABELS, detectProvider, profileKeyId, canDeleteProfile, createProfileId, normalizeProfiles } = TranslatorCore;
+
 // Note about API key handling
 const API_KEY_NOTE = 'Your API key is encrypted and stored locally on this device. It is not synced across devices for security reasons.';
 
@@ -29,6 +31,10 @@ class OptionsManager {
       ollama: ['llama3', 'llama3.1', 'mistral', 'phi3', 'gemma2']
     };
     
+    this.profiles = [];
+    this.activeProfileId = '';
+    this.selectedProfileId = '';
+
     this.initialize();
   }
 
@@ -54,6 +60,8 @@ class OptionsManager {
       'autoTranslate',
       'apiEndpoint',
       'apiModel',
+      'apiProfiles',
+      'activeProfileId',
       'translationStyle',
       'popupWidth',
       'historyEnabled',
@@ -61,15 +69,156 @@ class OptionsManager {
     ]);
 
     this.populateForm(settings);
-    this.detectApiType(settings.apiEndpoint);
-    
-    // Show note about API key storage
-    this.showApiKeyNote();
-    
-    // Check if API key exists
-    if (settings.apiEndpoint) {
-      this.checkApiKeyStatus(settings.apiEndpoint);
+
+    const { profiles, activeProfileId } = normalizeProfiles(settings);
+    this.profiles = profiles;
+    this.activeProfileId = activeProfileId;
+    if (this.profiles.length === 0) {
+      // First run: start with an empty draft that is persisted on first save.
+      this.profiles.push(this.createDraftProfile());
     }
+    this.selectedProfileId = this.activeProfileId || this.profiles[0].id;
+
+    this.showApiKeyNote();
+    this.renderProfileSelect();
+    this.loadProfileIntoForm(this.getSelectedProfile());
+  }
+
+  createDraftProfile() {
+    return { id: createProfileId(), name: 'New profile', apiEndpoint: '', apiModel: '' };
+  }
+
+  getSelectedProfile() {
+    return this.profiles.find(profile => profile.id === this.selectedProfileId);
+  }
+
+  renderProfileSelect() {
+    const select = document.getElementById('profileSelect');
+    select.innerHTML = '';
+    for (const profile of this.profiles) {
+      const option = document.createElement('option');
+      option.value = profile.id;
+      option.textContent = profile.id === this.activeProfileId
+        ? `${profile.name} (active)`
+        : profile.name;
+      select.appendChild(option);
+    }
+    select.value = this.selectedProfileId;
+    document.getElementById('deleteProfileBtn').disabled = this.profiles.length <= 1;
+  }
+
+  loadProfileIntoForm(profile) {
+    document.getElementById('profileName').value = profile.name;
+    document.getElementById('apiEndpoint').value = profile.apiEndpoint;
+    document.getElementById('apiModel').value = profile.apiModel;
+
+    const apiKeyInput = document.getElementById('apiKey');
+    apiKeyInput.value = '';
+    apiKeyInput.placeholder = 'Enter API key (stored encrypted)';
+    const existingIndicator = apiKeyInput.parentElement.querySelector('.api-key-status');
+    if (existingIndicator) existingIndicator.remove();
+
+    const makeActive = document.getElementById('makeActive');
+    const isActive = profile.id === this.activeProfileId;
+    makeActive.checked = isActive || !this.activeProfileId;
+    makeActive.disabled = isActive;
+
+    this.detectApiType(profile.apiEndpoint);
+    this.updateModelPresets();
+    if (profile.apiEndpoint) {
+      this.checkApiKeyStatus(profile);
+    }
+    this.setTestResult(document.getElementById('testConnectionResult'), '', '');
+  }
+
+  // Keep unsaved edits when switching between profiles in the editor.
+  stashFormIntoProfile() {
+    const profile = this.getSelectedProfile();
+    if (!profile) return;
+    profile.name = document.getElementById('profileName').value.trim() || profile.name;
+    profile.apiEndpoint = document.getElementById('apiEndpoint').value.trim();
+    profile.apiModel = document.getElementById('apiModel').value.trim();
+  }
+
+  handleProfileSwitch(event) {
+    this.stashFormIntoProfile();
+    this.selectedProfileId = event.target.value;
+    this.renderProfileSelect();
+    this.loadProfileIntoForm(this.getSelectedProfile());
+  }
+
+  handleNewProfile() {
+    this.stashFormIntoProfile();
+    const profile = this.createDraftProfile();
+    this.profiles.push(profile);
+    this.selectedProfileId = profile.id;
+    this.renderProfileSelect();
+    this.loadProfileIntoForm(profile);
+    document.getElementById('profileName').select();
+  }
+
+  async handleDeleteProfile() {
+    if (this.profiles.length <= 1) return;
+    const profile = this.getSelectedProfile();
+
+    // Unsaved drafts do not count: deleting the last saved profile would leave
+    // translations with no usable configuration.
+    if (!canDeleteProfile(this.profiles, profile.id)) {
+      this.showStatus('Keep at least one saved profile. Save another one before deleting this one.', 'error');
+      return;
+    }
+
+    if (!confirm(`Delete profile "${profile.name}" and its stored API key?`)) {
+      return;
+    }
+
+    try {
+      await chrome.runtime.sendMessage({
+        action: 'storeApiKey',
+        provider: profileKeyId(profile.id),
+        apiKey: ''
+      });
+      // The migrated profile also owns the legacy per-provider key.
+      if (profile.id === 'default') {
+        await chrome.runtime.sendMessage({
+          action: 'storeApiKey',
+          provider: detectProvider(profile.apiEndpoint),
+          apiKey: ''
+        });
+      }
+
+      this.profiles = this.profiles.filter(item => item.id !== profile.id);
+      if (this.activeProfileId === profile.id) {
+        // Pick a saved profile, not an unsaved draft, as the replacement.
+        const replacement = this.profiles.find(item => item.apiEndpoint) || this.profiles[0];
+        this.activeProfileId = replacement.id;
+      }
+      await this.persistProfiles();
+      this.selectedProfileId = this.activeProfileId || this.profiles[0].id;
+      this.renderProfileSelect();
+      this.loadProfileIntoForm(this.getSelectedProfile());
+      this.showStatus('Profile deleted', 'success');
+    } catch (error) {
+      this.showStatus('Failed to delete profile', 'error');
+    }
+  }
+
+  // Persist saved profiles and mirror the active one into the flat
+  // apiEndpoint/apiModel keys that the translation path reads.
+  async persistProfiles() {
+    const saved = this.profiles.filter(profile => profile.apiEndpoint);
+    const active = saved.find(profile => profile.id === this.activeProfileId) || saved[0];
+    const update = { apiProfiles: saved, activeProfileId: active ? active.id : '' };
+    this.activeProfileId = update.activeProfileId;
+    if (active) {
+      update.apiEndpoint = active.apiEndpoint;
+      update.apiModel = active.apiModel;
+    } else {
+      // No saved profile left: drop the mirrored keys too, otherwise
+      // normalizeProfiles would resurrect a profile from them on next load.
+      await chrome.storage.local.remove(['apiEndpoint', 'apiModel']);
+    }
+    await chrome.storage.local.set(update);
   }
 
   populateForm(settings) {
@@ -85,16 +234,6 @@ class OptionsManager {
     document.getElementById('historyEnabled').checked =
       settings.historyEnabled || false;
     
-    document.getElementById('apiEndpoint').value = 
-      settings.apiEndpoint || '';
-    
-    // API key is stored encrypted, so we can't display it
-    document.getElementById('apiKey').value = '';
-    document.getElementById('apiKey').placeholder = 'Enter API key (stored encrypted)';
-    
-    document.getElementById('apiModel').value =
-      settings.apiModel || '';
-
     document.getElementById('glossary').value =
       settings.glossary || '';
     
@@ -136,6 +275,14 @@ class OptionsManager {
       radio.addEventListener('change', this.handleApiTypeChange.bind(this));
     });
 
+    document.getElementById('profileSelect').addEventListener('change', this.handleProfileSwitch.bind(this));
+    document.getElementById('newProfileBtn').addEventListener('click', this.handleNewProfile.bind(this));
+    document.getElementById('deleteProfileBtn').addEventListener('click', this.handleDeleteProfile.bind(this));
+
+    // The toolbar popup can switch the active profile while this page is open;
+    // follow it so a later Save does not switch back to a stale profile.
+    chrome.storage.onChanged.addListener(this.handleStorageChanged.bind(this));
+
     const testBtn = document.getElementById('testConnectionBtn');
     if (testBtn) {
       testBtn.addEventListener('click', this.handleTestConnection.bind(this));
@@ -145,6 +292,20 @@ class OptionsManager {
     if (clearHistoryBtn) {
       clearHistoryBtn.addEventListener('click', this.handleClearHistory.bind(this));
     }
+  }
+
+  handleStorageChanged(changes, areaName) {
+    if (areaName !== 'local' || !changes.activeProfileId) return;
+    const next = changes.activeProfileId.newValue || '';
+    if (next === this.activeProfileId) return;
+
+    this.activeProfileId = next;
+    this.renderProfileSelect();
+
+    const makeActive = document.getElementById('makeActive');
+    const isActive = this.selectedProfileId === this.activeProfileId;
+    makeActive.disabled = isActive;
+    makeActive.checked = isActive;
   }
 
   async handleClearHistory() {
@@ -183,6 +344,7 @@ class OptionsManager {
         apiEndpoint: settings.apiEndpoint,
         apiModel: settings.apiModel,
         apiKey: settings.apiKey,
+        profileId: this.selectedProfileId,
         firstLanguage: settings.firstLanguage,
         secondLanguage: settings.secondLanguage
       });
@@ -210,18 +372,18 @@ class OptionsManager {
   handleApiTypeChange(event) {
     const apiType = event.target.value;
 
-    if (apiType === 'openai') {
-      this.apiEndpointInput.value = this.API_ENDPOINTS.openai;
-      document.getElementById('apiModel').value = this.DEFAULT_MODELS.openai;
-    } else if (apiType === 'gemini') {
-      this.apiEndpointInput.value = this.API_ENDPOINTS.gemini;
-      document.getElementById('apiModel').value = this.DEFAULT_MODELS.gemini;
-    } else if (apiType === 'claude') {
-      this.apiEndpointInput.value = this.API_ENDPOINTS.claude;
-      document.getElementById('apiModel').value = this.DEFAULT_MODELS.claude;
-    } else if (apiType === 'ollama') {
-      this.apiEndpointInput.value = this.API_ENDPOINTS.ollama;
-      document.getElementById('apiModel').value = this.DEFAULT_MODELS.ollama;
+    // "Custom" has no preset endpoint/model; leave the user's values alone but
+    // still refresh the model suggestions below.
+    if (this.API_ENDPOINTS[apiType]) {
+      this.apiEndpointInput.value = this.API_ENDPOINTS[apiType];
+      document.getElementById('apiModel').value = this.DEFAULT_MODELS[apiType];
+
+      // Rename only while the name is still an auto-generated one.
+      const nameInput = document.getElementById('profileName');
+      const current = nameInput.value.trim();
+      if (!current || current === 'New profile' || Object.values(PROVIDER_LABELS).includes(current)) {
+        nameInput.value = PROVIDER_LABELS[apiType];
+      }
     }
 
     this.updateModelPresets();
@@ -238,27 +400,36 @@ class OptionsManager {
     }
 
     try {
-      // Extract API key before saving
-      const { apiKey, ...nonSensitiveSettings } = settings;
-      
-      // Save non-sensitive settings to local storage
-      await chrome.storage.local.set(nonSensitiveSettings);
-      
-      // If API key was provided, send it to background script
+      const { apiKey, makeActive, ...generalSettings } = settings;
+      delete generalSettings.apiEndpoint;
+      delete generalSettings.apiModel;
+      delete generalSettings.profileName;
+
+      this.stashFormIntoProfile();
+      if (makeActive || !this.activeProfileId) {
+        this.activeProfileId = this.selectedProfileId;
+      }
+
+      await chrome.storage.local.set(generalSettings);
+      await this.persistProfiles();
+
+      let keyStored = true;
       if (apiKey) {
-        const provider = this.detectProviderFromEndpoint(settings.apiEndpoint);
         const response = await chrome.runtime.sendMessage({
           action: 'storeApiKey',
-          provider: provider,
-          apiKey: apiKey,
-          skipPrompt: false
+          provider: profileKeyId(this.selectedProfileId),
+          apiKey: apiKey
         });
-        
-        if (response.success) {
-          this.showStatus('Settings saved successfully! API key encrypted and stored.', 'success');
-        } else {
-          this.showStatus('Settings saved but failed to encrypt API key', 'warning');
-        }
+        keyStored = Boolean(response && response.success);
+      }
+
+      this.renderProfileSelect();
+      this.loadProfileIntoForm(this.getSelectedProfile());
+
+      if (!keyStored) {
+        this.showStatus('Settings saved but failed to encrypt API key', 'warning');
+      } else if (apiKey) {
+        this.showStatus('Settings saved successfully! API key encrypted and stored.', 'success');
       } else {
         this.showStatus('Settings saved successfully!', 'success');
       }
@@ -277,6 +448,8 @@ class OptionsManager {
       historyEnabled: formData.get('historyEnabled') === 'on',
       apiEndpoint: formData.get('apiEndpoint'),
       apiKey: formData.get('apiKey'),
+      profileName: formData.get('profileName'),
+      makeActive: formData.get('makeActive') === 'on' || document.getElementById('makeActive').disabled,
       apiModel: formData.get('apiModel'),
       translationStyle: formData.get('translationStyle'),
       popupWidth: formData.get('popupWidth'),
@@ -306,30 +479,14 @@ class OptionsManager {
     apiKeyGroup.appendChild(noteDiv);
   }
   
-  detectProviderFromEndpoint(endpoint) {
-    if (!endpoint) return 'default';
-    
-    if (endpoint.includes('openai')) {
-      return 'openai';
-    } else if (endpoint.includes('generativelanguage.googleapis.com')) {
-      return 'gemini';
-    } else if (endpoint.includes('anthropic')) {
-      return 'claude';
-    } else if (endpoint.includes(':11434') || endpoint.includes('ollama') || endpoint.includes('/api/chat')) {
-      return 'ollama';
-    }
-    
-    return 'default';
-  }
-  
-  async checkApiKeyStatus(endpoint) {
-    const provider = this.detectProviderFromEndpoint(endpoint);
-    
+  async checkApiKeyStatus(profile) {
     // Send message to background to check if API key exists
     chrome.runtime.sendMessage({
       action: 'checkApiKey',
-      provider: provider
+      profileId: profile.id,
+      apiEndpoint: profile.apiEndpoint
     }, (response) => {
+      if (profile.id !== this.selectedProfileId) return;
       if (response && response.hasApiKey) {
         const apiKeyInput = document.getElementById('apiKey');
         apiKeyInput.placeholder = 'API key is already saved (enter new key to update)';

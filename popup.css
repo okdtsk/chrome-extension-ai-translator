@@ -94,3 +94,11 @@ h1 {
   color: #5f6368;
   font-size: 12px;
 }
+#profileSelect {
+  max-width: 150px;
+  font-size: 13px;
+}
+
+.status-item[hidden] {
+  display: none;
+}

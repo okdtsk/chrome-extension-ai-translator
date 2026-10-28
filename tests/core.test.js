@@ -248,3 +248,95 @@ test('parseClaudeErrorMessage', async (t) => {
     );
   });
 });
+
+test('profileKeyId', () => {
+  assert.equal(core.profileKeyId('abc'), 'profile_abc');
+});
+
+test('normalizeProfiles', async (t) => {
+  await t.test('returns an empty list when nothing is configured', () => {
+    assert.deepEqual(core.normalizeProfiles({}), { profiles: [], activeProfileId: '' });
+    assert.deepEqual(core.normalizeProfiles(undefined), { profiles: [], activeProfileId: '' });
+  });
+
+  await t.test('migrates the legacy flat settings into a "default" profile', () => {
+    const result = core.normalizeProfiles({
+      apiEndpoint: 'https://api.anthropic.com/v1/messages',
+      apiModel: 'claude-haiku-4-5'
+    });
+    assert.equal(result.activeProfileId, 'default');
+    assert.deepEqual(result.profiles, [{
+      id: 'default',
+      name: 'Claude',
+      apiEndpoint: 'https://api.anthropic.com/v1/messages',
+      apiModel: 'claude-haiku-4-5'
+    }]);
+  });
+
+  await t.test('keeps stored profiles and a valid active id', () => {
+    const profiles = [
+      { id: 'a', name: 'A', apiEndpoint: 'https://api.openai.com/v1/chat/completions', apiModel: 'gpt-4o' },
+      { id: 'b', name: 'B', apiEndpoint: 'http://localhost:11434/api/chat', apiModel: 'llama3' }
+    ];
+    const result = core.normalizeProfiles({ apiProfiles: profiles, activeProfileId: 'b' });
+    assert.equal(result.activeProfileId, 'b');
+    assert.equal(result.profiles.length, 2);
+  });
+
+  await t.test('falls back to the first profile when the active id is stale', () => {
+    const result = core.normalizeProfiles({
+      apiProfiles: [{ id: 'a', name: 'A', apiEndpoint: 'https://x.example', apiModel: '' }],
+      activeProfileId: 'gone'
+    });
+    assert.equal(result.activeProfileId, 'a');
+  });
+
+  await t.test('drops malformed profiles', () => {
+    const result = core.normalizeProfiles({
+      apiProfiles: [null, { name: 'no id' }, { id: 'ok', name: 'OK', apiEndpoint: 'https://x.example' }]
+    });
+    assert.deepEqual(result.profiles.map(profile => profile.id), ['ok']);
+  });
+});
+
+test('keyLookupIds', async (t) => {
+  const openai = 'https://api.openai.com/v1/chat/completions';
+
+  await t.test('a regular profile only looks at its own key', () => {
+    assert.deepEqual(core.keyLookupIds('work', openai), ['profile_work']);
+  });
+
+  await t.test('the migrated default profile falls back to the legacy provider key', () => {
+    assert.deepEqual(core.keyLookupIds('default', openai), ['profile_default', 'openai']);
+  });
+
+  await t.test('no profile at all uses the legacy provider key', () => {
+    assert.deepEqual(core.keyLookupIds('', openai), ['openai']);
+    assert.deepEqual(core.keyLookupIds(undefined, 'http://localhost:11434/api/chat'), ['ollama']);
+  });
+});
+
+test('canDeleteProfile', async (t) => {
+  const saved = (id) => ({ id, name: id, apiEndpoint: 'https://x.example', apiModel: '' });
+  const draft = (id) => ({ id, name: id, apiEndpoint: '', apiModel: '' });
+
+  await t.test('refuses to delete the only profile', () => {
+    assert.equal(core.canDeleteProfile([saved('a')], 'a'), false);
+  });
+
+  await t.test('refuses to delete the last saved profile when only drafts remain', () => {
+    assert.equal(core.canDeleteProfile([saved('a'), draft('d')], 'a'), false);
+  });
+
+  await t.test('allows deleting a saved profile when another saved one remains', () => {
+    assert.equal(core.canDeleteProfile([saved('a'), saved('b')], 'a'), true);
+  });
+
+  await t.test('allows deleting a draft next to a saved profile', () => {
+    assert.equal(core.canDeleteProfile([saved('a'), draft('d')], 'd'), true);
+  });
+
+  await t.test('returns false for an unknown id', () => {
+    assert.equal(core.canDeleteProfile([saved('a'), saved('b')], 'zzz'), false);
+  });
+});
