@@ -42,7 +42,7 @@ A Chrome extension that translates selected text using AI providers (OpenAI, Gem
 ## API Configuration Examples
 
 ### OpenAI
-- **Endpoint**: `https://api.openai.com/v1/chat/completions`
+- **Endpoint**: `https://api.openai.com/v1/responses` (Responses API, default). The legacy `https://api.openai.com/v1/chat/completions` endpoint is still supported.
 - **Model**: `gpt-4o-mini` (default), `gpt-4o`, `gpt-4-turbo`, `gpt-3.5-turbo`, etc.
 
 ### Gemini

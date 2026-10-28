@@ -11,7 +11,7 @@ class OptionsManager {
     this.apiEndpointInput = document.getElementById('apiEndpoint');
     
     this.API_ENDPOINTS = {
-      openai: 'https://api.openai.com/v1/chat/completions',
+      openai: 'https://api.openai.com/v1/responses',
       gemini: 'https://generativelanguage.googleapis.com/v1beta/models',
       claude: 'https://api.anthropic.com/v1/messages',
       ollama: 'http://localhost:11434/api/chat'
