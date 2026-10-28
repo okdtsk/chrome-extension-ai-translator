@@ -340,3 +340,120 @@ test('canDeleteProfile', async (t) => {
     assert.equal(core.canDeleteProfile([saved('a'), saved('b')], 'zzz'), false);
   });
 });
+
+test('isOpenAIResponsesEndpoint', async (t) => {
+  await t.test('matches /responses paths', () => {
+    assert.equal(core.isOpenAIResponsesEndpoint('https://api.openai.com/v1/responses'), true);
+    assert.equal(core.isOpenAIResponsesEndpoint('https://api.openai.com/v1/responses/'), true);
+    assert.equal(core.isOpenAIResponsesEndpoint('https://proxy.example/openai/v1/responses?api-version=x'), true);
+  });
+
+  await t.test('does not match chat completions or empty values', () => {
+    assert.equal(core.isOpenAIResponsesEndpoint('https://api.openai.com/v1/chat/completions'), false);
+    assert.equal(core.isOpenAIResponsesEndpoint(''), false);
+    assert.equal(core.isOpenAIResponsesEndpoint(undefined), false);
+  });
+});
+
+test('buildOpenAIRequestBody', async (t) => {
+  const messages = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'hello' }
+  ];
+
+  await t.test('builds a Responses API body', () => {
+    const body = core.buildOpenAIRequestBody({
+      endpoint: 'https://api.openai.com/v1/responses',
+      model: 'gpt-6-luna',
+      messages,
+      maxOutputTokens: 1000,
+      stream: true
+    });
+    assert.deepEqual(body, {
+      model: 'gpt-6-luna',
+      temperature: 0.3,
+      instructions: 'sys',
+      input: [{ role: 'user', content: 'hello' }],
+      max_output_tokens: 1000,
+      stream: true
+    });
+  });
+
+  await t.test('uses max_completion_tokens for OpenAI chat completions', () => {
+    const body = core.buildOpenAIRequestBody({
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      model: 'gpt-6-luna',
+      messages,
+      maxOutputTokens: 1000,
+      stream: false
+    });
+    assert.equal(body.max_completion_tokens, 1000);
+    assert.equal('max_tokens' in body, false);
+    assert.equal('stream' in body, false);
+    assert.deepEqual(body.messages, messages);
+  });
+
+  await t.test('keeps max_tokens for custom compatible endpoints', () => {
+    const body = core.buildOpenAIRequestBody({
+      endpoint: 'https://my-proxy.example/v1/chat/completions',
+      model: 'm',
+      messages,
+      maxOutputTokens: 1000
+    });
+    assert.equal(body.max_tokens, 1000);
+    assert.equal('max_completion_tokens' in body, false);
+  });
+});
+
+test('adjustOpenAIBodyForError', async (t) => {
+  await t.test('renames max_tokens when rejected', () => {
+    const body = { model: 'm', max_tokens: 100, temperature: 0.3 };
+    const error = { error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.", param: 'max_tokens' } };
+    assert.deepEqual(core.adjustOpenAIBodyForError(body, error), { model: 'm', temperature: 0.3, max_completion_tokens: 100 });
+  });
+
+  await t.test('drops temperature when rejected', () => {
+    const body = { model: 'm', max_output_tokens: 100, temperature: 0.3 };
+    const error = { error: { message: "Unsupported parameter: 'temperature' is not supported with this model.", param: 'temperature' } };
+    assert.deepEqual(core.adjustOpenAIBodyForError(body, error), { model: 'm', max_output_tokens: 100 });
+  });
+
+  await t.test('returns null for unrelated or already-adjusted errors', () => {
+    assert.equal(core.adjustOpenAIBodyForError({ model: 'm' }, { error: { param: 'temperature' } }), null);
+    assert.equal(core.adjustOpenAIBodyForError({ model: 'm', temperature: 0.3 }, { error: { code: 'invalid_api_key' } }), null);
+    assert.equal(core.adjustOpenAIBodyForError({ model: 'm' }, {}), null);
+  });
+});
+
+test('extractOpenAIResponseText', async (t) => {
+  await t.test('reads chat completions responses', () => {
+    assert.equal(core.extractOpenAIResponseText({ choices: [{ message: { content: 'hi' } }] }), 'hi');
+  });
+
+  await t.test('reads Responses API output, skipping reasoning items', () => {
+    const data = {
+      output: [
+        { type: 'reasoning', summary: [] },
+        { type: 'message', content: [{ type: 'output_text', text: 'Hello ' }, { type: 'output_text', text: 'world' }] }
+      ]
+    };
+    assert.equal(core.extractOpenAIResponseText(data), 'Hello world');
+  });
+
+  await t.test('returns empty string when no text', () => {
+    assert.equal(core.extractOpenAIResponseText({}), '');
+    assert.equal(core.extractOpenAIResponseText(null), '');
+  });
+});
+
+test('extractOpenAIStreamDelta', async (t) => {
+  await t.test('reads both stream formats', () => {
+    assert.equal(core.extractOpenAIStreamDelta({ type: 'response.output_text.delta', delta: 'a' }), 'a');
+    assert.equal(core.extractOpenAIStreamDelta({ choices: [{ delta: { content: 'b' } }] }), 'b');
+  });
+
+  await t.test('ignores lifecycle events', () => {
+    assert.equal(core.extractOpenAIStreamDelta({ type: 'response.created' }), '');
+    assert.equal(core.extractOpenAIStreamDelta({ choices: [{ delta: { role: 'assistant' } }] }), '');
+  });
+});

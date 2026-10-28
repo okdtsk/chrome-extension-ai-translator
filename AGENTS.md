@@ -64,7 +64,7 @@ Web Page → Content Script (content.js) → Background Service Worker (backgrou
 
 ### API Support
 The extension detects API type by URL pattern:
-- OpenAI: Contains "openai.com"
+- OpenAI: Contains "openai.com" (an endpoint path ending in `/responses` uses the Responses API; otherwise Chat Completions)
 - Gemini: Contains "generativelanguage.googleapis.com"
 - Claude: Contains "anthropic.com"
 - Ollama: Contains "localhost:11434" or "/api/chat"

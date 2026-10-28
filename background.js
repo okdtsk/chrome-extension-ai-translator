@@ -13,6 +13,10 @@ const {
   makeCacheKey,
   parseOpenAIErrorMessage,
   parseClaudeErrorMessage,
+  buildOpenAIRequestBody,
+  adjustOpenAIBodyForError,
+  extractOpenAIResponseText,
+  extractOpenAIStreamDelta,
   ERROR_MESSAGES
 } = self.TranslatorCore;
 
@@ -410,7 +414,7 @@ class TranslationService {
     }
   }
 
-  async callOpenAIAPIStream(settings, messages, maxOutputTokens, onDelta) {
+  buildOpenAIHeaders(settings) {
     const headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${settings.apiKey || ''}`
@@ -418,36 +422,60 @@ class TranslationService {
     if (settings.organizationId) {
       headers['OpenAI-Organization'] = settings.organizationId;
     }
+    return headers;
+  }
 
-    const response = await fetch(settings.apiEndpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: settings.apiModel || 'gpt-3.5-turbo',
-        messages,
-        temperature: 0.3,
-        max_tokens: maxOutputTokens,
-        stream: true
-      })
-    });
+  // POST to an OpenAI(-compatible) endpoint. If the API rejects a parameter
+  // we know how to adjust (e.g. temperature on reasoning models, max_tokens
+  // on newer models), retry with the fixed body. Each adjustment removes the
+  // offending parameter, so the loop is bounded. Returns the ok
+  // response; throws a user-facing error otherwise.
+  async fetchOpenAI(settings, body) {
+    let currentBody = body;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await fetch(settings.apiEndpoint, {
+        method: 'POST',
+        headers: this.buildOpenAIHeaders(settings),
+        body: JSON.stringify(currentBody)
+      });
+      if (response.ok) return response;
 
-    if (!response.ok) {
       let errorData = {};
       try { errorData = await response.json(); } catch { /* ignore */ }
-      throw this.parseOpenAIError(errorData, response.status);
+      const adjusted = response.status === 400 ? adjustOpenAIBodyForError(currentBody, errorData) : null;
+      if (!adjusted) throw this.parseOpenAIError(errorData, response.status);
+      currentBody = adjusted;
     }
+    throw new Error(ERROR_MESSAGES.GENERIC_ERROR);
+  }
+
+  async callOpenAIAPIStream(settings, messages, maxOutputTokens, onDelta) {
+    const body = buildOpenAIRequestBody({
+      endpoint: settings.apiEndpoint,
+      model: settings.apiModel || 'gpt-3.5-turbo',
+      messages,
+      maxOutputTokens,
+      stream: true
+    });
+    const response = await this.fetchOpenAI(settings, body);
 
     let full = '';
     await this.readSSEStream(response, ({ data }) => {
+      let parsed;
       try {
-        const parsed = JSON.parse(data);
-        const delta = parsed.choices?.[0]?.delta?.content;
-        if (delta) {
-          full += delta;
-          onDelta(delta);
-        }
+        parsed = JSON.parse(data);
       } catch {
         // Skip malformed events; OpenAI occasionally sends pings/keepalives.
+        return;
+      }
+      // Responses API reports mid-stream failures as events, not HTTP errors.
+      if (parsed.type === 'error' || parsed.type === 'response.failed') {
+        throw this.parseOpenAIError({ error: parsed.error || parsed.response?.error || parsed }, 500);
+      }
+      const delta = extractOpenAIStreamDelta(parsed);
+      if (delta) {
+        full += delta;
+        onDelta(delta);
       }
     });
 
@@ -548,37 +576,21 @@ class TranslationService {
   }
 
   async callOpenAIAPI(settings, messages, maxOutputTokens) {
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${settings.apiKey || ''}`
-    };
-
-    if (settings.organizationId) {
-      headers['OpenAI-Organization'] = settings.organizationId;
-    }
-
-    const response = await fetch(settings.apiEndpoint, {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify({
-        model: settings.apiModel || 'gpt-3.5-turbo',
-        messages: messages,
-        temperature: 0.3,
-        max_tokens: maxOutputTokens
-      })
+    const body = buildOpenAIRequestBody({
+      endpoint: settings.apiEndpoint,
+      model: settings.apiModel || 'gpt-3.5-turbo',
+      messages,
+      maxOutputTokens,
+      stream: false
     });
-
+    const response = await this.fetchOpenAI(settings, body);
     const responseData = await response.json();
 
-    if (!response.ok) {
-      throw this.parseOpenAIError(responseData, response.status);
-    }
-
-    if (!responseData.choices?.[0]?.message?.content) {
+    const text = extractOpenAIResponseText(responseData);
+    if (!text) {
       throw new Error(ERROR_MESSAGES.INVALID_RESPONSE);
     }
-
-    return responseData.choices[0].message.content;
+    return text;
   }
 
   async callGeminiAPI(settings, messages, maxOutputTokens) {
