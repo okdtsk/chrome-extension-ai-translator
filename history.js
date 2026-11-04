@@ -107,10 +107,11 @@ class HistoryPage {
   }
 
   buildBody(text) {
-    const p = document.createElement('p');
-    p.className = 'entry-text';
-    p.textContent = text || '';
-    return p;
+    const body = document.createElement('div');
+    body.className = 'entry-text';
+    // renderMarkdown escapes all text and only emits its own fixed set of tags.
+    body.innerHTML = TranslatorMarkdown.renderMarkdown(text);
+    return body;
   }
 
   formatTimestamp(ts) {
@@ -127,7 +128,7 @@ class HistoryPage {
     const original = button.dataset.label || button.textContent;
     button.dataset.label = original;
     try {
-      await navigator.clipboard.writeText(text || '');
+      await navigator.clipboard.writeText(TranslatorMarkdown.markdownToPlainText(text));
       button.textContent = 'Copied';
     } catch {
       button.textContent = 'Copy failed';

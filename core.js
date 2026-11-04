@@ -149,11 +149,13 @@
     creative: 'You are a creative translator. Translate with significant interpretive freedom, fully adapting cultural references, idioms, and expressions to best convey the spirit and emotional impact in the target language.'
   };
 
+  const FORMATTING_INSTRUCTION = 'The source text may use Markdown to represent the formatting of the original content. Keep every Markdown marker on the corresponding translated text: headings (#), bullet and numbered lists with their nesting and indentation, bold (**), italic (*), strikethrough (~~), blockquotes (>), horizontal rules, line breaks, and backslash escapes. Do not translate the contents of inline code (`) or fenced code blocks (```). Do not add Markdown that is not in the source, and do not wrap the output in a code block.';
+
   const getSystemPrompt = (translationStyle, glossaryRules) => {
     const style = translationStyle && STYLE_INSTRUCTIONS[translationStyle] ? translationStyle : 'balanced';
     const baseInstruction = 'IMPORTANT: Preserve the paragraph structure of the original text. Keep paragraph breaks where they appear in the source text. ';
     const glossarySection = buildGlossarySection(glossaryRules);
-    const tail = ' Return ONLY the translated text itself with preserved paragraph breaks.';
+    const tail = ` ${FORMATTING_INSTRUCTION} Return ONLY the translated text itself with preserved paragraph breaks and Markdown formatting.`;
     return baseInstruction + STYLE_INSTRUCTIONS[style] + tail + glossarySection;
   };
 
