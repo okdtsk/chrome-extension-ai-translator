@@ -62,7 +62,7 @@ class TranslationPopup {
     this.selectedText = sourceText;
     this.selectedTextWithBreaks = liveText
       ? this.captureTextWithStructure(selection)
-      : sourceText;
+      : TranslatorMarkdown.plainTextToMarkdown(sourceText);
 
     if (selectionInfo) {
       this.create(selectionInfo.x, selectionInfo.y, selectionInfo);
@@ -171,17 +171,20 @@ class TranslationPopup {
   }
 
   captureTextWithStructure(selection) {
+    const plainFallback = () =>
+      TranslatorMarkdown.plainTextToMarkdown(selection ? selection.toString() : '');
+
     if (!selection || selection.rangeCount === 0) {
-      return selection.toString();
+      return plainFallback();
     }
 
     try {
       const range = selection.getRangeAt(0);
       const markdown = TranslatorMarkdown.selectionToMarkdown(range.cloneContents(), range);
       // Selections inside form fields clone to nothing, but still have text.
-      return markdown || selection.toString();
+      return markdown || plainFallback();
     } catch (error) {
-      return selection.toString();
+      return plainFallback();
     }
   }
 

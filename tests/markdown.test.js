@@ -1,7 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { selectionToMarkdown, renderMarkdown, markdownToPlainText } = require('../markdown.js');
+const {
+  selectionToMarkdown,
+  plainTextToMarkdown,
+  renderMarkdown,
+  markdownToPlainText,
+  storedTextToHtml,
+  storedTextToPlain
+} = require('../markdown.js');
 const core = require('../core.js');
 
 // Minimal DOM stand-ins: the serializer only reads nodeType, tagName,
@@ -424,4 +431,150 @@ test('getSystemPrompt asks the model to preserve Markdown', () => {
     assert.match(prompt, /Do not add/);
     assert.match(prompt, /Do not translate the contents of inline code/);
   }
+});
+
+test('adjacent inline spans', async (t) => {
+  const roundTrip = (...children) => {
+    const md = selectionToMarkdown(fragment(el('p', ...children)));
+    return { md, html: renderMarkdown(md), plain: markdownToPlainText(md) };
+  };
+
+  await t.test('merges spans of the same kind', () => {
+    assert.deepEqual(roundTrip(el('strong', 'a'), el('b', 'b')), {
+      md: '**ab**', html: '<p><strong>ab</strong></p>', plain: 'ab'
+    });
+    assert.deepEqual(roundTrip(el('em', 'a'), el('i', 'b')), {
+      md: '*ab*', html: '<p><em>ab</em></p>', plain: 'ab'
+    });
+    assert.deepEqual(roundTrip(el('del', 'a'), el('s', 'b')), {
+      md: '~~ab~~', html: '<p><del>ab</del></p>', plain: 'ab'
+    });
+  });
+
+  await t.test('keeps spans of different kinds apart', () => {
+    assert.deepEqual(roundTrip(el('strong', 'a'), el('em', 'b')), {
+      md: '**a***b*', html: '<p><strong>a</strong><em>b</em></p>', plain: 'ab'
+    });
+    assert.deepEqual(roundTrip(el('em', 'a'), el('strong', 'b')), {
+      md: '*a***b**', html: '<p><em>a</em><strong>b</strong></p>', plain: 'ab'
+    });
+  });
+
+  await t.test('does not merge across a literal star or whitespace', () => {
+    assert.equal(roundTrip('**', el('strong', 'a')).plain, '**a');
+    assert.equal(roundTrip(el('strong', 'a'), ' ', el('strong', 'b')).md, '**a** **b**');
+  });
+
+  await t.test('handles nested spans next to each other', () => {
+    assert.equal(
+      roundTrip(el('strong', el('em', 'a')), el('strong', 'b')).html,
+      '<p><strong><em>a</em>b</strong></p>'
+    );
+    assert.equal(
+      roundTrip(el('strong', el('em', 'a')), el('em', 'b')).plain,
+      'ab'
+    );
+  });
+
+  await t.test('renders unmerged delimiters from model output', () => {
+    assert.equal(renderMarkdown('**a****b**'), '<p><strong>a</strong><strong>b</strong></p>');
+    assert.equal(renderMarkdown('~~a~~~~b~~'), '<p><del>a</del><del>b</del></p>');
+    assert.equal(markdownToPlainText('**a****b**'), 'ab');
+  });
+});
+
+test('structure enclosing a paragraph wrapper', async (t) => {
+  const selected = (build) => {
+    const inner = text('word');
+    build(inner);
+    return selectionToMarkdown(fragment('word'), {
+      commonAncestorContainer: inner, startContainer: inner, startOffset: 0
+    });
+  };
+
+  await t.test('keeps a blockquote', () => {
+    assert.equal(selected(inner => el('blockquote', el('p', inner))), '> word');
+  });
+
+  await t.test('keeps a list item and its number', () => {
+    assert.equal(selected(inner => el('ul', el('li', el('p', inner)))), '- word');
+    assert.equal(
+      selected(inner => el('ol', { start: '2' }, el('li', 'x'), el('li', el('div', el('p', inner))))),
+      '3. word'
+    );
+  });
+
+  await t.test('keeps nested context and renders it', () => {
+    const md = selected(inner => el('blockquote', el('ul', el('li', el('ol', el('li', el('p', el('b', inner))))))));
+    assert.equal(md, '> - 1. **word**');
+    assert.equal(
+      renderMarkdown(md),
+      '<blockquote><ul><li><ol><li><p><strong>word</strong></p></li></ol></li></ul></blockquote>'
+    );
+  });
+
+  await t.test('keeps context around a heading and a list span', () => {
+    assert.equal(selected(inner => el('blockquote', el('h2', inner))), '> ## word');
+
+    const start = text('a');
+    const list = el('ul', el('li', start), el('li', 'b'));
+    el('blockquote', list);
+    assert.equal(
+      selectionToMarkdown(fragment(el('li', 'a'), el('li', 'b')), {
+        commonAncestorContainer: list, startContainer: start, startOffset: 0
+      }),
+      '> - a\n> - b'
+    );
+  });
+
+  await t.test('ignores inline formatting outside the enclosing block', () => {
+    assert.equal(selected(inner => el('strong', el('blockquote', el('p', inner)))), '> word');
+  });
+});
+
+test('literal hashes in headings', async (t) => {
+  await t.test('survive the round trip', () => {
+    const md = selectionToMarkdown(fragment(el('h2', 'Use ##')));
+    assert.equal(md, '## Use ##');
+    assert.equal(renderMarkdown(md), '<h2>Use ##</h2>');
+    assert.equal(markdownToPlainText(md), 'Use ##');
+  });
+
+  await t.test('keep a language name', () => {
+    assert.equal(renderMarkdown('# Learn C #'), '<h1>Learn C #</h1>');
+  });
+});
+
+test('plainTextToMarkdown', async (t) => {
+  await t.test('keeps every character literal through rendering', () => {
+    const source = '# a\n- *b*\n1. `c`\n~~d~~ \\*e';
+    assert.equal(markdownToPlainText(plainTextToMarkdown(source)), source);
+  });
+
+  await t.test('handles empty input', () => {
+    assert.equal(plainTextToMarkdown(''), '');
+    assert.equal(plainTextToMarkdown(null), '');
+  });
+});
+
+test('stored history text', async (t) => {
+  await t.test('treats entries without a format as literal plain text', () => {
+    const legacy = 'Use *stars* and `ticks`\n# literally <b>';
+    assert.equal(storedTextToPlain(legacy, undefined), legacy);
+    assert.equal(
+      storedTextToHtml(legacy, undefined),
+      '<p class="plain-text">Use *stars* and `ticks`\n# literally &lt;b&gt;</p>'
+    );
+  });
+
+  await t.test('treats markdown entries as Markdown', () => {
+    assert.equal(storedTextToPlain('**a** \\*b\\*', 'markdown'), 'a *b*');
+    assert.equal(storedTextToHtml('**a**', 'markdown'), '<p><strong>a</strong></p>');
+  });
+
+  await t.test('handles missing text', () => {
+    assert.equal(storedTextToPlain(undefined, undefined), '');
+    assert.equal(storedTextToHtml(undefined, undefined), '<p class="plain-text"></p>');
+    assert.equal(storedTextToHtml(undefined, 'markdown'), '');
+  });
 });

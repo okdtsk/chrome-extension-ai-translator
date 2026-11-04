@@ -6,6 +6,7 @@
 // and from history.html, and required from Node tests.
 
 (function (root) {
+  const STORED_FORMAT_MARKDOWN = 'markdown';
   const ELEMENT_NODE = 1;
   const TEXT_NODE = 3;
 
@@ -88,8 +89,27 @@
     return [`${fence}\n${content}\n${fence}`];
   };
 
-  const serializeInlineChildren = (node, ctx) =>
-    Array.from(node.childNodes).map(child => serializeInline(child, ctx)).join('');
+  // Adjacent spans of the same kind read as one span, and their joined markers
+  // would be ambiguous (*a**b*), so the closing and opening markers are dropped.
+  const appendInline = (accumulated, previous, child, ctx) => {
+    const piece = serializeInline(child, ctx);
+    const marker = INLINE_MARKERS[tagOf(child)];
+    if (marker && previous && INLINE_MARKERS[tagOf(previous)] === marker &&
+        accumulated.endsWith(marker) && piece.startsWith(marker)) {
+      return accumulated.slice(0, -marker.length) + piece.slice(marker.length);
+    }
+    return accumulated + piece;
+  };
+
+  const serializeInlineChildren = (node, ctx) => {
+    let content = '';
+    let previous = null;
+    for (const child of Array.from(node.childNodes)) {
+      content = appendInline(content, previous, child, ctx);
+      previous = child;
+    }
+    return content;
+  };
 
   const serializeText = (node, ctx) => escapeInlineText(
     ctx.preformatted ? node.textContent : node.textContent.replace(/[ \t\r\n\f]+/g, ' ')
@@ -125,9 +145,11 @@
   const serializeBlocks = (parent, ctx) => {
     const blocks = [];
     let inline = '';
+    let previous = null;
     const flushInline = () => {
       blocks.push(...inlineToParagraphs(inline, ctx));
       inline = '';
+      previous = null;
     };
 
     for (const child of Array.from(parent.childNodes)) {
@@ -136,7 +158,8 @@
         flushInline();
         blocks.push(...serializeBlock(child, ctx));
       } else {
-        inline += serializeInline(child, ctx);
+        inline = appendInline(inline, previous, child, ctx);
+        previous = child;
       }
     }
     flushInline();
@@ -281,33 +304,49 @@
     };
     const blockTag = block ? tagOf(block) : '';
 
+    let markdown;
     if (isListTag(blockTag)) {
       const ordered = blockTag === 'ol';
       const start = listStart(block) + countItemsBefore(block, rangeStartChild(block, range));
-      return serializeList(fragment, ordered, start, ctx).join('\n');
+      markdown = serializeList(fragment, ordered, start, ctx).join('\n');
+    } else {
+      markdown = serializeBlocks(fragment, ctx).join('\n\n');
+      for (const marker of markers) markdown = wrapLines(markdown, marker);
+      const heading = blockTag.match(HEADING_TAG);
+      if (heading) markdown = headingLine(Number(heading[1]), markdown);
     }
-
-    let markdown = serializeBlocks(fragment, ctx).join('\n\n');
     if (!markdown) return '';
-    for (const marker of markers) markdown = wrapLines(markdown, marker);
 
-    const heading = blockTag.match(HEADING_TAG);
-    if (heading) return headingLine(Number(heading[1]), markdown);
-    if (blockTag === 'blockquote') return quoteLines(markdown);
-    if (blockTag === 'li') {
-      const parent = block.parentNode;
-      const ordered = Boolean(parent) && tagOf(parent) === 'ol';
-      const marker = ordered ? `${listStart(parent) + countItemsBefore(parent, block)}. ` : '- ';
-      return marker + indentLines(markdown, marker.length).trimStart();
+    // Lists and quotes also apply through wrappers such as <li><p>, so every
+    // enclosing one is added, innermost first.
+    for (const ancestor of ancestors.slice(block ? ancestors.indexOf(block) : ancestors.length)) {
+      markdown = applyStructure(ancestor, markdown);
     }
     return markdown;
   };
+
+  const applyStructure = (ancestor, markdown) => {
+    const tag = tagOf(ancestor);
+    if (tag === 'blockquote') return quoteLines(markdown);
+    if (tag !== 'li') return markdown;
+    const parent = ancestor.parentNode;
+    const ordered = Boolean(parent) && tagOf(parent) === 'ol';
+    const marker = ordered ? `${listStart(parent) + countItemsBefore(parent, ancestor)}. ` : '- ';
+    return marker + indentLines(markdown, marker.length).trimStart();
+  };
+
+  // Plain text taken from outside the DOM walk (form fields, the context menu
+  // fallback) has no formatting, so all of its Markdown characters are literal.
+  const plainTextToMarkdown = (text) => String(text || '')
+    .split('\n')
+    .map(line => escapeLineStart(escapeInlineText(line)))
+    .join('\n');
 
   // --- Markdown parsing -----------------------------------------------------
 
   const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/;
   const FENCE = /^\s*(`{3,})[^`]*$/;
-  const HEADING = /^\s*(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/;
+  const HEADING = /^\s*(#{1,6})[ \t]+(.*?)[ \t]*$/;
   const RULE = /^\s*([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
   const QUOTE = /^\s*>[ \t]?/;
   const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
@@ -467,11 +506,24 @@
     return null;
   };
 
-  // Find the closing delimiter, skipping escapes and code spans. Single
-  // markers pass over ** pairs, and a *** run closes both levels, with the
-  // innermost marker taken from the front of the run.
+  // Offset of the closer within a delimiter run, or -1 if the run does not
+  // close. A run longer than its closer also holds an inner closer or the next
+  // span's opener, so what is open inside the span decides which part this is:
+  // **a *b*** closes italic first, while **a***b* opens italic after the bold.
+  const closerOffset = (char, size, run, innerOpen) => {
+    if (char === '~') return run >= 2 ? 0 : -1;
+    if (size === 2) {
+      if (run < 2) return -1;
+      return innerOpen && run >= 3 ? 1 : 0;
+    }
+    if (run === 2) return -1;
+    return innerOpen && run >= 3 ? 2 : 0;
+  };
+
+  // Find the closing delimiter, skipping escapes and code spans.
   const findClosing = (text, from, char, size) => {
     let index = from;
+    let innerOpen = false;
     while (index < text.length) {
       const current = text[index];
       if (current === '\\') {
@@ -481,9 +533,10 @@
         index = span ? span.end : index + runLength(text, index, '`');
       } else if (current === char) {
         const run = runLength(text, index, char);
-        const usable = size === 1 ? run === 1 || run === 3 : run >= size;
-        const close = index + run - size;
-        if (usable && close > from && !/\s/.test(text[close - 1])) return close;
+        const offset = closerOffset(char, size, run, innerOpen);
+        const close = index + offset;
+        if (offset !== -1 && close > from && !/\s/.test(text[close - 1])) return close;
+        if (char === '*' && run === (size === 2 ? 1 : 2)) innerOpen = !innerOpen;
         index += run;
       } else {
         index += 1;
@@ -636,7 +689,24 @@
 
   const markdownToPlainText = (markdown) => blocksToPlain(parseMarkdown(markdown));
 
-  const exports = { selectionToMarkdown, renderMarkdown, markdownToPlainText };
+  // History entries saved before format preservation have no format and hold
+  // plain text, where characters such as * are literal.
+  const storedTextToHtml = (text, format) => (format === STORED_FORMAT_MARKDOWN
+    ? renderMarkdown(text)
+    : `<p class="plain-text">${escapeHtml(String(text || ''))}</p>`);
+
+  const storedTextToPlain = (text, format) => (format === STORED_FORMAT_MARKDOWN
+    ? markdownToPlainText(text)
+    : String(text || ''));
+
+  const exports = {
+    selectionToMarkdown,
+    plainTextToMarkdown,
+    renderMarkdown,
+    markdownToPlainText,
+    storedTextToHtml,
+    storedTextToPlain
+  };
 
   root.TranslatorMarkdown = exports;
 

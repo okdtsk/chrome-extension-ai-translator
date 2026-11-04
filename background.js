@@ -930,6 +930,7 @@ chrome.runtime.onConnect.addListener((port) => {
           apiModel: settings.apiModel,
           swap: settings.swap,
           provider,
+          format: 'markdown',
           timestamp: Date.now()
         });
       }

@@ -55,12 +55,12 @@ class HistoryPage {
     const originalBlock = document.createElement('div');
     originalBlock.className = 'entry-block';
     originalBlock.appendChild(this.buildLabel('Original'));
-    originalBlock.appendChild(this.buildBody(entry.original));
+    originalBlock.appendChild(this.buildBody(entry.original, entry.format));
 
     const translationBlock = document.createElement('div');
     translationBlock.className = 'entry-block';
     translationBlock.appendChild(this.buildLabel('Translation'));
-    translationBlock.appendChild(this.buildBody(entry.translation));
+    translationBlock.appendChild(this.buildBody(entry.translation, entry.format));
 
     const actions = document.createElement('div');
     actions.className = 'entry-actions';
@@ -69,7 +69,7 @@ class HistoryPage {
     copyBtn.type = 'button';
     copyBtn.className = 'btn btn-small';
     copyBtn.textContent = 'Copy translation';
-    copyBtn.addEventListener('click', () => this.handleCopy(copyBtn, entry.translation));
+    copyBtn.addEventListener('click', () => this.handleCopy(copyBtn, entry.translation, entry.format));
     actions.appendChild(copyBtn);
 
     const deleteBtn = document.createElement('button');
@@ -106,11 +106,11 @@ class HistoryPage {
     return span;
   }
 
-  buildBody(text) {
+  buildBody(text, format) {
     const body = document.createElement('div');
     body.className = 'entry-text';
-    // renderMarkdown escapes all text and only emits its own fixed set of tags.
-    body.innerHTML = TranslatorMarkdown.renderMarkdown(text);
+    // storedTextToHtml escapes all text and only emits its own fixed set of tags.
+    body.innerHTML = TranslatorMarkdown.storedTextToHtml(text, format);
     return body;
   }
 
@@ -124,11 +124,11 @@ class HistoryPage {
     }
   }
 
-  async handleCopy(button, text) {
+  async handleCopy(button, text, format) {
     const original = button.dataset.label || button.textContent;
     button.dataset.label = original;
     try {
-      await navigator.clipboard.writeText(TranslatorMarkdown.markdownToPlainText(text));
+      await navigator.clipboard.writeText(TranslatorMarkdown.storedTextToPlain(text, format));
       button.textContent = 'Copied';
     } catch {
       button.textContent = 'Copy failed';
