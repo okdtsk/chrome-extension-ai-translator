@@ -178,8 +178,9 @@
   // style. Whitespace outside a span keeps the two sides as separate spans.
   const resolveSpaceStyles = (runs) => runs.map((run, position) => {
     if (!run.space) return run;
-    const before = runs.slice(0, position).reverse().find(other => !other.space);
-    const after = runs.slice(position + 1).find(other => !other.space);
+    // combineSpaces guarantees that the neighbors of a space are not spaces.
+    const before = runs[position - 1];
+    const after = runs[position + 1];
     const styles = before && after
       ? run.styles.filter(style => before.styles.includes(style) && after.styles.includes(style))
       : [];
@@ -189,7 +190,7 @@
   // The style that continues furthest is opened first, so it ends up outermost.
   const styleReach = (runs, from, style) => {
     let end = from;
-    while (end < runs.length && (runs[end].space || runs[end].styles.includes(style))) end += 1;
+    while (end < runs.length && runs[end].styles.includes(style)) end += 1;
     return end;
   };
 
@@ -430,6 +431,10 @@
 
   // --- Markdown parsing -----------------------------------------------------
 
+  // Each unmatched opener scans to the end of the text, which would be quadratic
+  // for output full of stray markers, and rendering repeats on every streaming
+  // delta. Past this budget the remaining markers stay literal; no text is lost.
+  const MAX_FAILED_SCAN_CHARS = 1000000;
   const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/;
   const FENCE = /^\s*(`{3,})[^`]*$/;
   const HEADING = /^\s*(#{1,6})[ \t]+(.*?)[ \t]*$/;
@@ -660,6 +665,7 @@
     const nodes = [];
     let buffer = '';
     let index = 0;
+    let failedScanChars = 0;
     const flush = () => {
       if (buffer) nodes.push({ type: 'text', text: buffer });
       buffer = '';
@@ -698,9 +704,13 @@
         let matched = false;
         for (const size of sizes) {
           const contentStart = index + size;
+          if (failedScanChars >= MAX_FAILED_SCAN_CHARS) break;
           if (/\s/.test(text[contentStart] || ' ')) continue;
           const close = findClosing(text, contentStart, current, size);
-          if (close === -1) continue;
+          if (close === -1) {
+            failedScanChars += text.length - contentStart;
+            continue;
+          }
           const type = current === '~' ? 'del' : (size === 2 ? 'strong' : 'em');
           pushMarked(type, text.slice(contentStart, close));
           index = close + size;

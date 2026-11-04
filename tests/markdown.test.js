@@ -791,3 +791,20 @@ test('random block trees survive the round trip', () => {
     );
   }
 });
+
+test('output full of unmatched markers', async (t) => {
+  for (const [name, unit] of [['*', '*a '], ['**', '**a '], ['~~', '~~a ']]) {
+    await t.test(`keeps all text for stray ${name}`, () => {
+      const source = unit.repeat(20000).trim();
+      assert.equal(markdownToPlainText(source), source);
+    });
+  }
+
+  await t.test('still formats ordinary text with many markers', () => {
+    const source = Array(500).fill('**a** *b* ~~c~~').join(' ');
+    const html = renderMarkdown(source);
+    assert.equal(html.match(/<strong>/g).length, 500);
+    assert.equal(html.match(/<em>/g).length, 500);
+    assert.equal(html.match(/<del>/g).length, 500);
+  });
+});
