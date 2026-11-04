@@ -41,10 +41,16 @@
     return BLOCK_TAGS.has(tag) || containsBlock(node);
   };
 
+  // A backslash or tilde at the edge of the text could join a following marker,
+  // so those are escaped as well.
   const escapeInlineText = (text) => text
-    .replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\')
+    .replace(/\\(?=[!-/:-@[-`{-~]|$)/g, '\\\\')
     .replace(/[`*]/g, '\\$&')
-    .replace(/~~/g, '\\~\\~');
+    .replace(/~+/g, (run, position, escaped) => (
+      run.length >= 2 || position === 0 || position + run.length === escaped.length
+        ? run.replace(/~/g, '\\~')
+        : run
+    ));
 
   // Keep text at the start of a line from being read as a block marker.
   const escapeLineStart = (line) => {
@@ -89,50 +95,130 @@
     return [`${fence}\n${content}\n${fence}`];
   };
 
-  // Adjacent spans of the same kind read as one span, and their joined markers
-  // would be ambiguous (*a**b*), so the closing and opening markers are dropped.
-  const appendInline = (accumulated, previous, child, ctx) => {
-    const piece = serializeInline(child, ctx);
-    const marker = INLINE_MARKERS[tagOf(child)];
-    if (marker && previous && INLINE_MARKERS[tagOf(previous)] === marker &&
-        accumulated.endsWith(marker) && piece.startsWith(marker)) {
-      return accumulated.slice(0, -marker.length) + piece.slice(marker.length);
+  // Inline content is collected as a flat list of styled runs before any marker
+  // is written. Markers joined from separately serialized spans can be ambiguous
+  // (*a**b*), whereas merging runs first means adjacent spans with equal styles
+  // share one set of markers, however their elements were nested.
+  const collectRuns = (node, styles, ctx, runs) => {
+    if (node.nodeType === TEXT_NODE) {
+      const text = ctx.preformatted
+        ? node.textContent
+        : node.textContent.replace(/[ \t\r\n\f]+/g, ' ');
+      runs.push({ text, styles });
+      return;
     }
-    return accumulated + piece;
-  };
-
-  const serializeInlineChildren = (node, ctx) => {
-    let content = '';
-    let previous = null;
-    for (const child of Array.from(node.childNodes)) {
-      content = appendInline(content, previous, child, ctx);
-      previous = child;
-    }
-    return content;
-  };
-
-  const serializeText = (node, ctx) => escapeInlineText(
-    ctx.preformatted ? node.textContent : node.textContent.replace(/[ \t\r\n\f]+/g, ' ')
-  );
-
-  const serializeInline = (node, ctx) => {
-    if (node.nodeType === TEXT_NODE) return serializeText(node, ctx);
-    if (node.nodeType !== ELEMENT_NODE) return '';
+    if (node.nodeType !== ELEMENT_NODE) return;
 
     const tag = tagOf(node);
-    if (SKIPPED_TAGS.has(tag)) return '';
-    if (tag === 'br') return '\n';
-    if (CODE_TAGS.has(tag)) return codeSpan(rawText(node));
+    if (SKIPPED_TAGS.has(tag)) return;
+    if (tag === 'br') {
+      runs.push({ text: '\n', styles: [] });
+      return;
+    }
+    if (CODE_TAGS.has(tag)) {
+      runs.push({ code: rawText(node), styles });
+      return;
+    }
 
     const marker = INLINE_MARKERS[tag];
-    if (marker) {
-      if (ctx.activeMarkers.has(marker)) return serializeInlineChildren(node, ctx);
-      const activeMarkers = new Set(ctx.activeMarkers).add(marker);
-      return wrapLines(serializeInlineChildren(node, { ...ctx, activeMarkers }), marker);
-    }
-    const content = serializeInlineChildren(node, ctx);
-    return tag === 'td' || tag === 'th' ? `${content} ` : content;
+    const childStyles = marker && !styles.includes(marker) && !ctx.activeMarkers.has(marker)
+      ? [...styles, marker]
+      : styles;
+    for (const child of Array.from(node.childNodes)) collectRuns(child, childStyles, ctx, runs);
+    if (tag === 'td' || tag === 'th') runs.push({ text: ' ', styles: [] });
   };
+
+  const sameStyles = (a, b) => a.length === b.length && a.every(style => b.includes(style));
+
+  const mergeRuns = (runs) => {
+    const merged = [];
+    for (const run of runs) {
+      const last = merged[merged.length - 1];
+      if (last && sameStyles(last.styles, run.styles) && ('code' in last) === ('code' in run)) {
+        if ('code' in run) last.code += run.code;
+        else last.text += run.text;
+      } else {
+        merged.push({ ...run });
+      }
+    }
+    return merged;
+  };
+
+  // Markers must touch the text they wrap, so whitespace at the edges of a run
+  // and line breaks become separate runs.
+  const separateWhitespace = (runs) => runs.flatMap((run) => {
+    if ('code' in run) return run.code.trim() ? [run] : [];
+    return run.text.split(/(\s*\n\s*)/).flatMap((part, position) => {
+      if (position % 2 === 1) return [{ text: part, styles: [], space: true }];
+      const [, lead, core, trail] = part.match(/^(\s*)([\s\S]*?)(\s*)$/);
+      return [
+        ...(lead ? [{ text: lead, styles: run.styles, space: true }] : []),
+        ...(core ? [{ text: core, styles: run.styles }] : []),
+        ...(trail ? [{ text: trail, styles: run.styles, space: true }] : [])
+      ];
+    });
+  });
+
+  // Consecutive whitespace acts as one run, keeping only the styles all of it has.
+  const combineSpaces = (runs) => {
+    const combined = [];
+    for (const run of runs) {
+      const last = combined[combined.length - 1];
+      if (last && last.space && run.space) {
+        last.text += run.text;
+        last.styles = last.styles.filter(style => run.styles.includes(style));
+      } else {
+        combined.push({ ...run });
+      }
+    }
+    return combined;
+  };
+
+  // A styled space stays styled only as far as both of its neighbors share that
+  // style. Whitespace outside a span keeps the two sides as separate spans.
+  const resolveSpaceStyles = (runs) => runs.map((run, position) => {
+    if (!run.space) return run;
+    const before = runs.slice(0, position).reverse().find(other => !other.space);
+    const after = runs.slice(position + 1).find(other => !other.space);
+    const styles = before && after
+      ? run.styles.filter(style => before.styles.includes(style) && after.styles.includes(style))
+      : [];
+    return { ...run, styles };
+  });
+
+  // The style that continues furthest is opened first, so it ends up outermost.
+  const styleReach = (runs, from, style) => {
+    let end = from;
+    while (end < runs.length && (runs[end].space || runs[end].styles.includes(style))) end += 1;
+    return end;
+  };
+
+  const writeRuns = (runs) => {
+    const open = [];
+    let output = '';
+    runs.forEach((run, position) => {
+      const firstEnded = open.findIndex(style => !run.styles.includes(style));
+      if (firstEnded !== -1) {
+        while (open.length > firstEnded) output += open.pop();
+      }
+      // Whitespace never opens a marker; the next run with text does.
+      if (!run.space) {
+        run.styles
+          .filter(style => !open.includes(style))
+          .sort((a, b) => styleReach(runs, position, b) - styleReach(runs, position, a))
+          .forEach((style) => {
+            output += style;
+            open.push(style);
+          });
+      }
+      output += 'code' in run ? codeSpan(run.code) : escapeInlineText(run.text);
+    });
+    while (open.length > 0) output += open.pop();
+    return output;
+  };
+
+  const runsToMarkdown = (runs) =>
+    writeRuns(resolveSpaceStyles(combineSpaces(separateWhitespace(mergeRuns(runs)))));
 
   const inlineToParagraphs = (raw, ctx) => raw
     .split('\n')
@@ -144,12 +230,10 @@
 
   const serializeBlocks = (parent, ctx) => {
     const blocks = [];
-    let inline = '';
-    let previous = null;
+    let runs = [];
     const flushInline = () => {
-      blocks.push(...inlineToParagraphs(inline, ctx));
-      inline = '';
-      previous = null;
+      blocks.push(...inlineToParagraphs(runsToMarkdown(runs), ctx));
+      runs = [];
     };
 
     for (const child of Array.from(parent.childNodes)) {
@@ -158,8 +242,7 @@
         flushInline();
         blocks.push(...serializeBlock(child, ctx));
       } else {
-        inline = appendInline(inline, previous, child, ctx);
-        previous = child;
+        collectRuns(child, [], ctx, runs);
       }
     }
     flushInline();
@@ -339,7 +422,10 @@
   // fallback) has no formatting, so all of its Markdown characters are literal.
   const plainTextToMarkdown = (text) => String(text || '')
     .split('\n')
-    .map(line => escapeLineStart(escapeInlineText(line)))
+    .map((line) => {
+      const [, indent, rest] = line.match(/^(\s*)([\s\S]*)$/);
+      return indent + escapeLineStart(escapeInlineText(rest));
+    })
     .join('\n');
 
   // --- Markdown parsing -----------------------------------------------------
@@ -550,8 +636,24 @@
   const openerSizes = (text, index, run) => {
     if (run === 1 || run === 2) return [run];
     if (run !== 3) return [];
-    const nextRun = text.slice(index + run).match(/\*+/);
-    return nextRun && nextRun[0].length === 1 ? [2, 1] : [1, 2];
+    return nextMarkerRunLength(text, index + run) === 1 ? [2, 1] : [1, 2];
+  };
+
+  const nextMarkerRunLength = (text, from) => {
+    let index = from;
+    while (index < text.length) {
+      if (text[index] === '\\') {
+        index += 2;
+      } else if (text[index] === '`') {
+        const span = matchCodeSpan(text, index);
+        index = span ? span.end : index + runLength(text, index, '`');
+      } else if (text[index] === '*') {
+        return runLength(text, index, '*');
+      } else {
+        index += 1;
+      }
+    }
+    return 0;
   };
 
   const parseInline = (text) => {

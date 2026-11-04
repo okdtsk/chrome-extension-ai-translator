@@ -578,3 +578,216 @@ test('stored history text', async (t) => {
     assert.equal(storedTextToHtml(undefined, 'markdown'), '');
   });
 });
+
+test('adjacent nested and code spans', async (t) => {
+  const roundTrip = (...children) => {
+    const md = selectionToMarkdown(fragment(el('p', ...children)));
+    return { md, html: renderMarkdown(md), plain: markdownToPlainText(md) };
+  };
+
+  await t.test('merges nested spans in both nesting orders', () => {
+    assert.deepEqual(roundTrip(el('strong', el('em', 'a')), el('strong', el('em', 'b'))), {
+      md: '***ab***', html: '<p><em><strong>ab</strong></em></p>', plain: 'ab'
+    });
+    assert.deepEqual(roundTrip(el('em', el('strong', 'a')), el('em', el('strong', 'b'))), {
+      md: '***ab***', html: '<p><em><strong>ab</strong></em></p>', plain: 'ab'
+    });
+    assert.equal(
+      roundTrip(el('strong', el('em', 'a')), el('em', el('strong', 'b'))).md,
+      '***ab***'
+    );
+  });
+
+  await t.test('merges strikethrough around italic', () => {
+    assert.deepEqual(roundTrip(el('del', el('em', 'a')), el('del', el('em', 'b'))), {
+      md: '~~*ab*~~', html: '<p><del><em>ab</em></del></p>', plain: 'ab'
+    });
+  });
+
+  await t.test('merges adjacent code', () => {
+    assert.deepEqual(roundTrip(el('code', 'a'), el('code', 'b')), {
+      md: '`ab`', html: '<p><code>ab</code></p>', plain: 'ab'
+    });
+    assert.equal(roundTrip(el('strong', el('code', 'a')), el('code', 'b')).html,
+      '<p><strong><code>a</code></strong><code>b</code></p>');
+  });
+
+  await t.test('keeps the style that spans both runs outermost', () => {
+    assert.equal(roundTrip(el('em', el('strong', 'a'), 'b')).md, '***a**b*');
+    assert.equal(roundTrip(el('strong', el('em', 'a'), 'b')).md, '***a*b**');
+    assert.equal(roundTrip(el('em', 'a'), el('strong', el('em', 'b'))).md, '*a**b***');
+  });
+
+  await t.test('keeps a shared space inside the shared style', () => {
+    assert.equal(roundTrip(el('strong', el('em', 'a '), 'b')).md, '***a* b**');
+    assert.equal(roundTrip(el('strong', 'a '), el('strong', 'b')).md, '**a b**');
+  });
+
+  await t.test('does not let an edge backslash or tilde join a marker', () => {
+    const backslash = roundTrip(el('strong', 'a\\'));
+    assert.equal(backslash.html, '<p><strong>a\\</strong></p>');
+    const tilde = roundTrip(el('del', 'a~'), 'b');
+    assert.equal(tilde.html, '<p><del>a~</del>b</p>');
+    assert.equal(roundTrip('10~20').md, '10~20');
+  });
+});
+
+// Small seeded generator (mulberry32), so a failure reproduces exactly.
+const randomSource = (seed) => () => {
+  seed = (seed + 0x6D2B79F5) | 0;
+  let mixed = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+  return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+};
+const ROUNDS = Number(process.env.ROUND_TRIP_ROUNDS) || 3000;
+
+test('random inline trees survive the round trip', () => {
+  const STYLE_OF = { strong: 'strong', b: 'strong', em: 'em', i: 'em', del: 'del', s: 'del' };
+  const WORDS = ['a', 'b ', ' c', 'あ', '*', '**', '`', '~', '~~', '\\', '_', '# ', '- ', '1. ', '> ', ' ', '[x]'];
+
+  const generate = (random, depth) => {
+    const pick = (list) => list[Math.floor(random() * list.length)];
+    const count = 1 + Math.floor(random() * 4);
+    const nodes = [];
+    for (let i = 0; i < count; i++) {
+      const choice = random();
+      if (depth > 0 && choice < 0.55) {
+        nodes.push(el(pick(Object.keys(STYLE_OF)), ...generate(random, depth - 1)));
+      } else if (choice < 0.7) {
+        nodes.push(el('code', pick(['x', 'y z', '`', 'a`b', '**'])));
+      } else {
+        nodes.push(text(pick(WORDS)));
+      }
+    }
+    return nodes;
+  };
+
+  // Non-whitespace characters paired with their sorted styles. Whitespace is
+  // normalized by design, so it is left out of the comparison.
+  const expectedChars = (node, styles = []) => {
+    if (node.nodeType === 3) {
+      return [...node.textContent].filter(c => /\S/.test(c)).map(c => [c, [...new Set(styles)].sort().join()]);
+    }
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'code') {
+      const code = [...new Set([...styles, 'code'])].sort().join();
+      return [...node.childNodes[0].textContent].filter(c => /\S/.test(c)).map(c => [c, code]);
+    }
+    const next = STYLE_OF[tag] ? [...styles, STYLE_OF[tag]] : styles;
+    return node.childNodes.flatMap(child => expectedChars(child, next));
+  };
+  const renderedChars = (html) => {
+    const chars = [];
+    const stack = [];
+    const entities = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+    for (const [, close, tag, entity, char] of html.matchAll(/<(\/?)(\w+)>|&([#\w]+);|([\s\S])/g)) {
+      if (tag) {
+        if (['strong', 'em', 'del', 'code'].includes(tag)) {
+          if (close) stack.pop();
+          else stack.push(tag);
+        }
+      } else {
+        const value = entity ? entities[entity] : char;
+        if (/\S/.test(value)) chars.push([value, [...new Set(stack)].sort().join()]);
+      }
+    }
+    return chars;
+  };
+
+  const random = randomSource(20261105);
+  for (let round = 0; round < ROUNDS; round++) {
+    const paragraph = el('p', ...generate(random, 3));
+    const expected = expectedChars(paragraph);
+    const md = selectionToMarkdown(fragment(paragraph));
+    const label = `round ${round}: ${JSON.stringify(md)}`;
+    assert.deepEqual(renderedChars(renderMarkdown(md)), expected, label);
+    assert.equal(
+      markdownToPlainText(md).replace(/\s/g, ''),
+      expected.map(([char]) => char).join(''),
+      label
+    );
+  }
+});
+
+test('plain-text fallback with indented block markers', async (t) => {
+  await t.test('keeps every indented marker literal', () => {
+    for (const line of ['# literal', '- literal', '+ literal', '> literal', '1. literal', '---']) {
+      const md = plainTextToMarkdown(`a\n  ${line}`);
+      assert.equal(markdownToPlainText(md).replace(/\n\s*/, '\n'), `a\n${line}`, md);
+      assert.doesNotMatch(renderMarkdown(md), /<(?:h1|ul|ol|blockquote|hr)/, md);
+    }
+  });
+
+  await t.test('keeps tab-indented and first-line markers literal', () => {
+    assert.equal(renderMarkdown(plainTextToMarkdown('\t# a')), '<p># a</p>');
+    assert.equal(renderMarkdown(plainTextToMarkdown('   - a')), '<p>- a</p>');
+  });
+});
+
+test('random block trees survive the round trip', () => {
+  const WORDS = ['a', 'b c', '*', '# x', '- y', '1. z', '> q', '---', '`', '~~', '\\', 'あ'];
+  const random = randomSource(20261106);
+  const pick = (list) => list[Math.floor(random() * list.length)];
+  const word = () => {
+    const value = pick(WORDS);
+    return random() < 0.2 ? el('strong', value) : value;
+  };
+
+  // Each node is paired with the tags and text the render should contain.
+  const generateBlock = (depth) => {
+    const choice = random();
+    if (depth > 0 && choice < 0.25) {
+      const tag = pick(['ul', 'ol']);
+      const items = [];
+      const count = 1 + Math.floor(random() * 3);
+      for (let i = 0; i < count; i++) {
+        const content = random() < 0.4 ? [generateBlock(depth - 1)] : [el('p', word(), word())];
+        items.push(el('li', ...content));
+      }
+      return el(tag, ...items);
+    }
+    if (depth > 0 && choice < 0.4) return el('blockquote', generateBlock(depth - 1), el('p', word()));
+    if (choice < 0.55) return el(pick(['h1', 'h3', 'h6']), word(), word());
+    if (choice < 0.65) return el('pre', pick(['x\n  y', '```\nz', '# not a heading', '- not a list']));
+    return el('p', word(), el('br'), word());
+  };
+
+  const tagCounts = (root, counts = {}) => {
+    for (const node of root.childNodes) {
+      if (node.nodeType !== 1) continue;
+      const tag = node.tagName.toLowerCase();
+      if (['ul', 'ol', 'li', 'blockquote', 'pre', 'h1', 'h3', 'h6'].includes(tag)) {
+        counts[tag] = (counts[tag] || 0) + 1;
+      }
+      tagCounts(node, counts);
+    }
+    return counts;
+  };
+  const textOf = (node) => (node.nodeType === 3
+    ? node.textContent
+    : node.childNodes.map(textOf).join(''));
+  const unescapeHtml = (html) => html
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+
+  for (let round = 0; round < ROUNDS; round++) {
+    // The separator keeps two adjacent lists apart: Markdown has no way to mark
+    // them as separate, so they read as one list, with all items and text kept.
+    const root = fragment(generateBlock(3), el('p', 'sep'), generateBlock(3));
+    const md = selectionToMarkdown(root);
+    const html = renderMarkdown(md);
+    const label = `round ${round}: ${JSON.stringify(md)}`;
+
+    const rendered = {};
+    for (const [, tag] of html.matchAll(/<(ul|ol|li|blockquote|pre|h1|h3|h6)[ >]/g)) {
+      rendered[tag] = (rendered[tag] || 0) + 1;
+    }
+    assert.deepEqual(rendered, tagCounts(root), label);
+    assert.equal(
+      unescapeHtml(html).replace(/\s/g, ''),
+      textOf(root).replace(/\s/g, ''),
+      label
+    );
+  }
+});
