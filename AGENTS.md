@@ -97,6 +97,7 @@ Settings stored in Chrome Storage Local:
 - **Security**: API keys encrypted with Web Crypto API and stored in Chrome's local storage
 - **Keyboard Shortcut**: Cmd+C+C (Mac) or Ctrl+C+C (Windows/Linux) for manual translation
 - **Auto-positioning**: Popup appears near selected text with smart viewport detection
+- **Format Preservation**: `markdown.js` serializes the selected DOM to Markdown, the system prompt tells the model to keep the markers, and the result is rendered with `renderMarkdown` (escapes all text, fixed tag set, no links or raw HTML). Link URLs are deliberately not sent to the provider
 
 ## Development Rules
 

@@ -69,22 +69,148 @@
   padding: 8px 0;
   word-wrap: break-word;
   color: #1a1a1a;
-  white-space: pre-wrap;
 }
 
+/* Explicit values throughout, since the host page's styles also apply here. */
 .ai-translator-result p {
   margin: 0 0 0.8em 0;
+  padding: 0;
+  font-size: inherit;
   line-height: 1.6;
+  color: inherit;
 }
 
-.ai-translator-result p:last-child {
+.ai-translator-result h1,
+.ai-translator-result h2,
+.ai-translator-result h3,
+.ai-translator-result h4,
+.ai-translator-result h5,
+.ai-translator-result h6 {
+  margin: 0 0 0.5em 0;
+  padding: 0;
+  border: none;
+  font-family: inherit;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: normal;
+  text-transform: none;
+  color: inherit;
+}
+
+.ai-translator-result h1 { font-size: 1.4em; }
+.ai-translator-result h2 { font-size: 1.25em; }
+.ai-translator-result h3 { font-size: 1.15em; }
+.ai-translator-result h4,
+.ai-translator-result h5,
+.ai-translator-result h6 { font-size: 1em; }
+
+.ai-translator-result ul,
+.ai-translator-result ol {
+  margin: 0 0 0.8em 0;
+  padding: 0 0 0 1.5em;
+  list-style-position: outside;
+  color: inherit;
+}
+
+.ai-translator-result ul { list-style-type: disc; }
+.ai-translator-result ol { list-style-type: decimal; }
+.ai-translator-result ul ul { list-style-type: circle; }
+.ai-translator-result ul ul ul { list-style-type: square; }
+
+.ai-translator-result li {
+  display: list-item;
+  margin: 0.15em 0;
+  padding: 0;
+  background: none;
+  font-size: inherit;
+  line-height: 1.6;
+  color: inherit;
+}
+
+.ai-translator-result li::before {
+  content: none;
+}
+
+.ai-translator-result li > p {
+  margin: 0;
+}
+
+.ai-translator-result li > p + p {
+  margin-top: 0.5em;
+}
+
+.ai-translator-result li > ul,
+.ai-translator-result li > ol {
   margin-bottom: 0;
 }
 
-.ai-translator-result br {
-  display: block;
-  content: "";
-  margin: 0.4em 0;
+.ai-translator-result blockquote {
+  margin: 0 0 0.8em 0;
+  padding: 0 0 0 0.8em;
+  border: none;
+  border-left: 3px solid #e5e7eb;
+  background: none;
+  font-size: inherit;
+  font-style: normal;
+  color: #4b5563;
+}
+
+.ai-translator-result blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-translator-result strong {
+  font-weight: 700;
+  color: inherit;
+}
+
+.ai-translator-result em {
+  font-style: italic;
+  color: inherit;
+}
+
+.ai-translator-result del {
+  text-decoration: line-through;
+  color: inherit;
+}
+
+.ai-translator-result code {
+  padding: 0.1em 0.3em;
+  border: none;
+  border-radius: 4px;
+  background: #f3f4f6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  color: inherit;
+}
+
+.ai-translator-result pre {
+  margin: 0 0 0.8em 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: #f3f4f6;
+  overflow-x: auto;
+  white-space: pre;
+  color: inherit;
+}
+
+.ai-translator-result pre code {
+  padding: 0;
+  background: none;
+  white-space: inherit;
+}
+
+.ai-translator-result hr {
+  height: 0;
+  margin: 0.8em 0;
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  background: none;
+}
+
+.ai-translator-result > :last-child {
+  margin-bottom: 0;
 }
 
 
@@ -257,7 +383,7 @@
   background: #d1d5db;
 }
 
-.ai-translator-streaming::after {
+.ai-translator-streaming > :last-child::after {
   content: '▍';
   display: inline-block;
   margin-left: 2px;

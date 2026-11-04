@@ -62,7 +62,7 @@ class TranslationPopup {
     this.selectedText = sourceText;
     this.selectedTextWithBreaks = liveText
       ? this.captureTextWithStructure(selection)
-      : sourceText;
+      : TranslatorMarkdown.plainTextToMarkdown(sourceText);
 
     if (selectionInfo) {
       this.create(selectionInfo.x, selectionInfo.y, selectionInfo);
@@ -171,61 +171,20 @@ class TranslationPopup {
   }
 
   captureTextWithStructure(selection) {
-    if (!selection || selection.rangeCount === 0) {
-      return selection.toString();
-    }
+    const plainFallback = () =>
+      TranslatorMarkdown.plainTextToMarkdown(selection ? selection.toString() : '');
 
-    // Tags treated as paragraph breaks. The previous version also checked
-    // getComputedStyle(node).display === 'block' on a *detached* tempDiv,
-    // which returns UA defaults and was effectively dead code.
-    const BLOCK_TAGS = new Set([
-      'br', 'p', 'div',
-      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-      'li', 'tr', 'article', 'section', 'blockquote', 'pre'
-    ]);
+    if (!selection || selection.rangeCount === 0) {
+      return plainFallback();
+    }
 
     try {
       const range = selection.getRangeAt(0);
-
-      const tempDiv = document.createElement('div');
-      tempDiv.appendChild(range.cloneContents());
-
-      const walker = document.createTreeWalker(
-        tempDiv,
-        NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
-        null,
-        false
-      );
-
-      const textParts = [];
-      let currentParagraph = [];
-
-      while (walker.nextNode()) {
-        const node = walker.currentNode;
-
-        if (node.nodeType === Node.ELEMENT_NODE) {
-          const tagName = node.tagName?.toLowerCase();
-          if (tagName && BLOCK_TAGS.has(tagName)) {
-            if (currentParagraph.length > 0) {
-              textParts.push(currentParagraph.join(' ').trim());
-              currentParagraph = [];
-            }
-          }
-        } else if (node.nodeType === Node.TEXT_NODE) {
-          const text = node.textContent.trim();
-          if (text) {
-            currentParagraph.push(text);
-          }
-        }
-      }
-
-      if (currentParagraph.length > 0) {
-        textParts.push(currentParagraph.join(' ').trim());
-      }
-
-      return textParts.filter(part => part.length > 0).join('\n\n');
+      const markdown = TranslatorMarkdown.selectionToMarkdown(range.cloneContents(), range);
+      // Selections inside form fields clone to nothing, but still have text.
+      return markdown || plainFallback();
     } catch (error) {
-      return selection.toString();
+      return plainFallback();
     }
   }
 
@@ -563,11 +522,27 @@ class TranslationPopup {
     event.stopPropagation();
     const button = event.currentTarget;
     if (!this.currentTranslation) return;
+    const plainText = TranslatorMarkdown.markdownToPlainText(this.currentTranslation);
     try {
-      await navigator.clipboard.writeText(this.currentTranslation);
+      await this.writeClipboard(plainText, this.formatTranslatedText(this.currentTranslation));
       this.flashButtonLabel(button, 'Copied');
     } catch (error) {
       this.flashButtonLabel(button, 'Copy failed');
+    }
+  }
+
+  // Rich editors paste the HTML flavor and keep the formatting. Falls back to
+  // plain text where rich clipboard writes are unavailable or denied.
+  async writeClipboard(plainText, html) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/plain': new Blob([plainText], { type: 'text/plain' }),
+          'text/html': new Blob([html], { type: 'text/html' })
+        })
+      ]);
+    } catch (error) {
+      await navigator.clipboard.writeText(plainText);
     }
   }
 
@@ -660,15 +635,8 @@ class TranslationPopup {
   }
 
   formatTranslatedText(text) {
-    // First escape HTML to prevent XSS
-    const escaped = this.escapeHtml(text);
-    
-    // Convert line breaks to <br> tags for display
-    // Handle different line break patterns
-    return escaped
-      .replace(/\n\n/g, '</p><p>') // Double line breaks become paragraphs
-      .replace(/\n/g, '<br>') // Single line breaks become <br>
-      .replace(/^(.+)$/, '<p>$1</p>'); // Wrap in initial paragraph
+    // renderMarkdown escapes all text and only emits its own fixed set of tags.
+    return TranslatorMarkdown.renderMarkdown(text);
   }
 }
 

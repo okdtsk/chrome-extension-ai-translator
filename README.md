@@ -12,6 +12,7 @@ A Chrome extension that translates selected text using AI providers (OpenAI, Gem
 - **Test connection**: One-click probe in the settings page validates endpoint, key, model, and host permissions before you translate.
 - **Configurable popup width**: Narrow / Medium / Wide.
 - **Draggable popup**: Move the result popup if it covers the source text.
+- **Format preservation**: Headings, lists, bold, italic, strikethrough, blockquotes, and code in the selection carry over to the translation (as Markdown sent to the AI and rendered in the popup and history). Copy keeps the formatting in rich editors and uses clean plain text elsewhere.
 
 ## Installation
 
@@ -66,6 +67,7 @@ Files:
 - `manifest.json` — extension manifest (Manifest V3, service worker).
 - `background.js` — service worker: provider adapters, encrypted storage, message handling.
 - `core.js` — pure helpers (provider detection, glossary parsing, prompt construction, cache keys, error mapping). Loaded by the service worker via `importScripts` and by the test harness via `require`.
+- `markdown.js` — pure helpers that serialize the selected DOM to Markdown and render model output to safe HTML or plain text. Loaded as a content script, by the history page, and by the test harness via `require`.
 - `content.js` / `content.css` — content script: selection detection, popup UI.
 - `popup.html` / `popup.js` / `popup.css` — toolbar action popup.
 - `options.html` / `options.js` / `options.css` — settings page.
@@ -73,7 +75,7 @@ Files:
 
 ### Tests
 
-A small Node-based test harness covers the pure helpers in `core.js`:
+A small Node-based test harness covers the pure helpers in `core.js` and `markdown.js`:
 
 ```bash
 npm test
