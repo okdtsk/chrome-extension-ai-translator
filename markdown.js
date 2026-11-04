@@ -431,10 +431,13 @@
 
   // --- Markdown parsing -----------------------------------------------------
 
-  // Each unmatched opener scans to the end of the text, which would be quadratic
-  // for output full of stray markers, and rendering repeats on every streaming
-  // delta. Past this budget the remaining markers stay literal; no text is lost.
+  // Model output is untrusted and rendering repeats on every streaming delta, so
+  // work stays bounded on hostile input. Each unmatched opener scans to the end
+  // of its text, so failed scans share one budget per render; past it, remaining
+  // markers stay literal and no text is lost. Nesting recurses, so past the depth
+  // limit deeper markers are also left as text.
   const MAX_FAILED_SCAN_CHARS = 1000000;
+  const MAX_BLOCK_DEPTH = 32;
   const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/;
   const FENCE = /^\s*(`{3,})[^`]*$/;
   const HEADING = /^\s*(#{1,6})[ \t]+(.*?)[ \t]*$/;
@@ -456,7 +459,7 @@
     return match;
   };
 
-  const parseList = (lines, startIndex) => {
+  const parseList = (lines, startIndex, depth) => {
     const first = lines[startIndex].match(LIST_ITEM);
     const ordered = isOrderedMarker(first[2]);
     const indent = first[1].length;
@@ -477,8 +480,8 @@
           let next = index + 1;
           while (next < lines.length && isBlank(lines[next])) next += 1;
           if (next === lines.length || indentOf(lines[next]) <= indent) break;
-          itemLines.push('');
-          index += 1;
+          // Taking all the blank lines at once keeps a long run of them linear.
+          for (; index < next; index += 1) itemLines.push('');
         } else if (indentOf(line) > indent) {
           itemLines.push(line.slice(Math.min(indentOf(line), contentColumn)));
           index += 1;
@@ -486,7 +489,7 @@
           break;
         }
       }
-      items.push(parseBlocks(itemLines));
+      items.push(parseBlocks(itemLines, depth + 1));
 
       let next = index;
       while (next < lines.length && isBlank(lines[next])) next += 1;
@@ -501,7 +504,8 @@
     return { block: { type: 'list', ordered, start, items }, nextIndex: index };
   };
 
-  const parseBlocks = (lines) => {
+  const parseBlocks = (lines, depth = 0) => {
+    const canNest = depth < MAX_BLOCK_DEPTH;
     const blocks = [];
     let index = 0;
 
@@ -539,18 +543,18 @@
         continue;
       }
 
-      if (QUOTE.test(line)) {
+      if (canNest && QUOTE.test(line)) {
         const quoted = [];
         while (index < lines.length && QUOTE.test(lines[index])) {
           quoted.push(lines[index].replace(QUOTE, ''));
           index += 1;
         }
-        blocks.push({ type: 'quote', children: parseBlocks(quoted) });
+        blocks.push({ type: 'quote', children: parseBlocks(quoted, depth + 1) });
         continue;
       }
 
-      if (LIST_ITEM.test(line)) {
-        const { block, nextIndex } = parseList(lines, index);
+      if (canNest && LIST_ITEM.test(line)) {
+        const { block, nextIndex } = parseList(lines, index, depth);
         blocks.push(block);
         index = nextIndex;
         continue;
@@ -576,8 +580,17 @@
     return length;
   };
 
-  const matchCodeSpan = (text, start) => {
+  // Last position of each backtick run length, so an opener with no closer
+  // fails at once instead of scanning the rest of the text.
+  const lastBacktickRuns = (text) => {
+    const last = new Map();
+    for (const match of text.matchAll(/`+/g)) last.set(match[0].length, match.index);
+    return last;
+  };
+
+  const matchCodeSpan = (text, start, lastRuns) => {
     const length = runLength(text, start, '`');
+    if (!(lastRuns.get(length) > start)) return null;
     let index = start + length;
     while (index < text.length) {
       if (text[index] !== '`') {
@@ -612,7 +625,7 @@
   };
 
   // Find the closing delimiter, skipping escapes and code spans.
-  const findClosing = (text, from, char, size) => {
+  const findClosing = (text, from, char, size, lastRuns) => {
     let index = from;
     let innerOpen = false;
     while (index < text.length) {
@@ -620,7 +633,7 @@
       if (current === '\\') {
         index += 2;
       } else if (current === '`') {
-        const span = matchCodeSpan(text, index);
+        const span = matchCodeSpan(text, index, lastRuns);
         index = span ? span.end : index + runLength(text, index, '`');
       } else if (current === char) {
         const run = runLength(text, index, char);
@@ -638,19 +651,19 @@
 
   // For a *** opener, the length of the next run tells which marker is inner:
   // ***a* b** is bold around italic, otherwise italic goes on the outside.
-  const openerSizes = (text, index, run) => {
+  const openerSizes = (text, index, run, lastRuns) => {
     if (run === 1 || run === 2) return [run];
     if (run !== 3) return [];
-    return nextMarkerRunLength(text, index + run) === 1 ? [2, 1] : [1, 2];
+    return nextMarkerRunLength(text, index + run, lastRuns) === 1 ? [2, 1] : [1, 2];
   };
 
-  const nextMarkerRunLength = (text, from) => {
+  const nextMarkerRunLength = (text, from, lastRuns) => {
     let index = from;
     while (index < text.length) {
       if (text[index] === '\\') {
         index += 2;
       } else if (text[index] === '`') {
-        const span = matchCodeSpan(text, index);
+        const span = matchCodeSpan(text, index, lastRuns);
         index = span ? span.end : index + runLength(text, index, '`');
       } else if (text[index] === '*') {
         return runLength(text, index, '*');
@@ -661,18 +674,18 @@
     return 0;
   };
 
-  const parseInline = (text) => {
+  const parseInline = (text, budget) => {
+    const lastRuns = lastBacktickRuns(text);
     const nodes = [];
     let buffer = '';
     let index = 0;
-    let failedScanChars = 0;
     const flush = () => {
       if (buffer) nodes.push({ type: 'text', text: buffer });
       buffer = '';
     };
     const pushMarked = (type, inner) => {
       flush();
-      nodes.push({ type, children: parseInline(inner) });
+      nodes.push({ type, children: parseInline(inner, budget) });
     };
 
     while (index < text.length) {
@@ -685,7 +698,7 @@
       }
 
       if (current === '`') {
-        const span = matchCodeSpan(text, index);
+        const span = matchCodeSpan(text, index, lastRuns);
         if (span) {
           flush();
           nodes.push({ type: 'code', text: span.content });
@@ -700,15 +713,15 @@
 
       if (current === '*' || current === '~') {
         const run = runLength(text, index, current);
-        const sizes = current === '*' ? openerSizes(text, index, run) : (run === 2 ? [2] : []);
+        const sizes = current === '*' ? openerSizes(text, index, run, lastRuns) : (run === 2 ? [2] : []);
         let matched = false;
         for (const size of sizes) {
           const contentStart = index + size;
-          if (failedScanChars >= MAX_FAILED_SCAN_CHARS) break;
+          if (budget.failedScanChars >= MAX_FAILED_SCAN_CHARS) break;
           if (/\s/.test(text[contentStart] || ' ')) continue;
-          const close = findClosing(text, contentStart, current, size);
+          const close = findClosing(text, contentStart, current, size, lastRuns);
           if (close === -1) {
-            failedScanChars += text.length - contentStart;
+            budget.failedScanChars += text.length - contentStart;
             continue;
           }
           const type = current === '~' ? 'del' : (size === 2 ? 'strong' : 'em');
@@ -742,20 +755,20 @@
     return `<${node.type}>${inlineToHtml(node.children)}</${node.type}>`;
   }).join('');
 
-  const blocksToHtml = (blocks) => blocks.map((block) => {
+  const blocksToHtml = (blocks, budget) => blocks.map((block) => {
     switch (block.type) {
       case 'heading':
-        return `<h${block.level}>${inlineToHtml(parseInline(block.text))}</h${block.level}>`;
+        return `<h${block.level}>${inlineToHtml(parseInline(block.text, budget))}</h${block.level}>`;
       case 'paragraph':
-        return `<p>${inlineToHtml(parseInline(block.text))}</p>`;
+        return `<p>${inlineToHtml(parseInline(block.text, budget))}</p>`;
       case 'code':
         return `<pre><code>${escapeHtml(block.text)}</code></pre>`;
       case 'rule':
         return '<hr>';
       case 'quote':
-        return `<blockquote>${blocksToHtml(block.children)}</blockquote>`;
+        return `<blockquote>${blocksToHtml(block.children, budget)}</blockquote>`;
       case 'list': {
-        const items = block.items.map(item => `<li>${blocksToHtml(item)}</li>`).join('');
+        const items = block.items.map(item => `<li>${blocksToHtml(item, budget)}</li>`).join('');
         if (!block.ordered) return `<ul>${items}</ul>`;
         return block.start === 1 ? `<ol>${items}</ol>` : `<ol start="${block.start}">${items}</ol>`;
       }
@@ -766,40 +779,42 @@
 
   // Every tag comes from the fixed set above and all text is escaped, so the
   // result is safe to assign to innerHTML even for untrusted model output.
-  const renderMarkdown = (markdown) => blocksToHtml(parseMarkdown(markdown));
+  const renderMarkdown = (markdown) =>
+    blocksToHtml(parseMarkdown(markdown), { failedScanChars: 0 });
 
   const inlineToPlain = (nodes) => nodes.map((node) =>
     (node.children ? inlineToPlain(node.children) : node.text)
   ).join('');
 
-  const blocksToPlain = (blocks) => blocks.map((block) => {
+  const blocksToPlain = (blocks, budget) => blocks.map((block) => {
     switch (block.type) {
       case 'heading':
       case 'paragraph':
-        return inlineToPlain(parseInline(block.text));
+        return inlineToPlain(parseInline(block.text, budget));
       case 'code':
         return block.text;
       case 'rule':
         return '---';
       case 'quote':
-        return blocksToPlain(block.children).split('\n').map(line => (line ? `> ${line}` : '>')).join('\n');
+        return blocksToPlain(block.children, budget).split('\n').map(line => (line ? `> ${line}` : '>')).join('\n');
       case 'list':
         return block.items.map((item, position) => {
           const marker = block.ordered ? `${block.start + position}. ` : '- ';
-          return marker + indentLines(itemToPlain(item), marker.length).trimStart();
+          return marker + indentLines(itemToPlain(item, budget), marker.length).trimStart();
         }).join('\n');
       default:
         return '';
     }
   }).join('\n\n');
 
-  const itemToPlain = (blocks) => blocks.reduce((joined, block, position) => {
-    const text = blocksToPlain([block]);
+  const itemToPlain = (blocks, budget) => blocks.reduce((joined, block, position) => {
+    const text = blocksToPlain([block], budget);
     if (position === 0) return text;
     return joined + (block.type === 'list' ? '\n' : '\n\n') + text;
   }, '');
 
-  const markdownToPlainText = (markdown) => blocksToPlain(parseMarkdown(markdown));
+  const markdownToPlainText = (markdown) =>
+    blocksToPlain(parseMarkdown(markdown), { failedScanChars: 0 });
 
   // History entries saved before format preservation have no format and hold
   // plain text, where characters such as * are literal.

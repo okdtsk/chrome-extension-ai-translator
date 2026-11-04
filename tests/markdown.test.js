@@ -808,3 +808,47 @@ test('output full of unmatched markers', async (t) => {
     assert.equal(html.match(/<del>/g).length, 500);
   });
 });
+
+test('hostile model output', async (t) => {
+  const visibleText = (html) => html.replace(/<[^>]+>/g, '').replace(/\s/g, '');
+
+  await t.test('does not overflow the stack on deep nesting', () => {
+    for (const unit of ['- ', '> ', '1. ', '> - ', '- > ']) {
+      const source = `${unit.repeat(40000)}x`;
+      assert.match(renderMarkdown(source), /x/, unit);
+      assert.match(markdownToPlainText(source), /x/, unit);
+    }
+  });
+
+  await t.test('renders nesting up to the depth limit and keeps the text past it', () => {
+    assert.equal(renderMarkdown(`${'> '.repeat(32)}x`).match(/<blockquote>/g).length, 32);
+    const beyond = renderMarkdown(`${'> '.repeat(40)}x`);
+    assert.equal(beyond.match(/<blockquote>/g).length, 32);
+    assert.match(beyond, /(?:&gt; ){8}x/);
+  });
+
+  await t.test('keeps an item across a long run of blank lines', () => {
+    assert.equal(
+      renderMarkdown(`- a${'\n'.repeat(200000)}  b`),
+      '<ul><li><p>a</p><p>b</p></li></ul>'
+    );
+  });
+
+  await t.test('shares the scan budget across paragraphs and keeps all text', () => {
+    const paragraph = '*a '.repeat(2000).trim();
+    const source = Array(50).fill(paragraph).join('\n\n');
+    assert.equal(markdownToPlainText(source), source);
+  });
+
+  await t.test('keeps all text with stray markers and distinct backtick runs', () => {
+    let backticks = '';
+    for (let length = 1; length <= 300; length++) backticks += `${'`'.repeat(length)}a `;
+    const source = `${'*a '.repeat(5000)}${backticks}`.trim();
+    assert.equal(visibleText(renderMarkdown(source)), source.replace(/\s/g, ''));
+  });
+
+  await t.test('still matches backticks of equal length past a longer run', () => {
+    assert.equal(renderMarkdown('`a ``` b` c'), '<p><code>a ``` b</code> c</p>');
+    assert.equal(renderMarkdown('``` `a` ``` ``b'), '<p><code>`a`</code> ``b</p>');
+  });
+});
