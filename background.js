@@ -14,7 +14,9 @@ const {
   parseOpenAIErrorMessage,
   parseClaudeErrorMessage,
   buildOpenAIRequestBody,
-  adjustOpenAIBodyForError,
+  applyOpenAIBodyFix,
+  applyOpenAIBodyFixes,
+  detectOpenAIBodyFix,
   extractOpenAIResponseText,
   extractOpenAIStreamDelta,
   ERROR_MESSAGES
@@ -39,10 +41,33 @@ class EncryptedStorageManager {
     this.keyUsages = ['encrypt', 'decrypt'];
     this.saltKey = 'ai_translator_salt';
     this.ivKey = 'ai_translator_iv';
+    // PBKDF2 with 100k iterations is slow, and it used to run on every
+    // translation request. Derive once per service-worker lifetime and reuse.
+    this.keyPromise = null;
+
+    if (chrome.storage && chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName === 'local' && this.saltKey in changes) {
+          this.keyPromise = null;
+        }
+      });
+    }
   }
 
-  // Generate a cryptographic key from the extension's unique ID
-  async generateKey() {
+  // Memoized key derivation. Sharing one promise also stops two concurrent
+  // first calls from each generating (and saving) a different salt.
+  generateKey() {
+    if (!this.keyPromise) {
+      this.keyPromise = this.deriveKey().catch(error => {
+        this.keyPromise = null;
+        throw error;
+      });
+    }
+    return this.keyPromise;
+  }
+
+  // Derive a cryptographic key from the extension's unique ID
+  async deriveKey() {
     // Use a combination of extension ID and a fixed salt for key derivation
     const encoder = new TextEncoder();
     const keyMaterial = await crypto.subtle.importKey(
@@ -313,6 +338,52 @@ class TranslationCache {
 
 const translationCache = new TranslationCache();
 
+// Remembers which request-body fixes (see core.js OPENAI_BODY_FIXES) each
+// OpenAI endpoint + model needed. Kept in memory and mirrored to
+// chrome.storage.session so it survives service-worker restarts, but resets
+// with the browser session in case a model later starts accepting a
+// parameter it used to reject.
+class OpenAIBodyFixStore {
+  constructor() {
+    this.storageKey = 'openai_body_fixes_v1';
+    this.memory = null;
+  }
+
+  async load() {
+    if (this.memory) return this.memory;
+    let stored = {};
+    try {
+      if (chrome.storage && chrome.storage.session) {
+        const result = await chrome.storage.session.get(this.storageKey);
+        stored = result[this.storageKey] || {};
+      }
+    } catch {
+      // Fall back to an empty in-memory map.
+    }
+    if (!this.memory) this.memory = stored;
+    return this.memory;
+  }
+
+  async get(key) {
+    const map = await this.load();
+    return map[key] || [];
+  }
+
+  async add(key, fixes) {
+    const map = await this.load();
+    map[key] = Array.from(new Set([...(map[key] || []), ...fixes]));
+    try {
+      if (chrome.storage && chrome.storage.session) {
+        await chrome.storage.session.set({ [this.storageKey]: map });
+      }
+    } catch {
+      // In-memory copy still helps for this service-worker lifetime.
+    }
+  }
+}
+
+const openAIBodyFixStore = new OpenAIBodyFixStore();
+
 // Opt-in persistent history of completed translations, capped to keep storage
 // bounded. Lives in chrome.storage.local so it survives browser restarts and
 // can be browsed from the history page.
@@ -426,25 +497,38 @@ class TranslationService {
   }
 
   // POST to an OpenAI(-compatible) endpoint. If the API rejects a parameter
-  // we know how to adjust (e.g. temperature on reasoning models, max_tokens
-  // on newer models), retry with the fixed body. Each adjustment removes the
-  // offending parameter, so the loop is bounded. Returns the ok
-  // response; throws a user-facing error otherwise.
+  // we know how to adjust (e.g. temperature or reasoning effort on some
+  // models, max_tokens on newer models), retry with the fixed body. Each fix
+  // removes or renames the offending parameter, so the loop is bounded.
+  // Fixes are remembered per endpoint + model, so later requests skip the
+  // rejected round trip. Returns the ok response; throws a user-facing error
+  // otherwise.
   async fetchOpenAI(settings, body) {
-    let currentBody = body;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const fixKey = `${settings.apiEndpoint}\n${body.model}`;
+    const knownFixes = await openAIBodyFixStore.get(fixKey);
+    let currentBody = applyOpenAIBodyFixes(body, knownFixes);
+    const learnedFixes = [];
+
+    for (let attempt = 0; attempt < 4; attempt++) {
       const response = await fetch(settings.apiEndpoint, {
         method: 'POST',
         headers: this.buildOpenAIHeaders(settings),
         body: JSON.stringify(currentBody)
       });
-      if (response.ok) return response;
+      if (response.ok) {
+        if (learnedFixes.length > 0) {
+          // Not awaited: persisting must not delay the first token.
+          openAIBodyFixStore.add(fixKey, learnedFixes);
+        }
+        return response;
+      }
 
       let errorData = {};
       try { errorData = await response.json(); } catch { /* ignore */ }
-      const adjusted = response.status === 400 ? adjustOpenAIBodyForError(currentBody, errorData) : null;
-      if (!adjusted) throw this.parseOpenAIError(errorData, response.status);
-      currentBody = adjusted;
+      const fix = response.status === 400 ? detectOpenAIBodyFix(currentBody, errorData) : null;
+      if (!fix) throw this.parseOpenAIError(errorData, response.status);
+      learnedFixes.push(fix);
+      currentBody = applyOpenAIBodyFix(currentBody, fix);
     }
     throw new Error(ERROR_MESSAGES.GENERIC_ERROR);
   }
@@ -881,13 +965,6 @@ chrome.runtime.onConnect.addListener((port) => {
     const stored = await chrome.storage.local.get(keys);
     const settings = { ...defaults, ...stored };
     const provider = translationService.detectProvider(settings.apiEndpoint);
-    settings.apiKey = await encryptedStorage.getApiKeyForProfile(settings.activeProfileId, settings.apiEndpoint);
-
-    if (!settings.apiEndpoint || (provider !== 'ollama' && !settings.apiKey)) {
-      safePost({ type: 'error', error: ERROR_MESSAGES.NO_CONFIG });
-      try { port.disconnect(); } catch {}
-      return;
-    }
 
     settings.swap = Boolean(request.swap);
     const cacheKey = TranslationCache.makeKey({
@@ -901,13 +978,23 @@ chrome.runtime.onConnect.addListener((port) => {
       glossary: settings.glossary
     });
 
-    if (!request.retry) {
-      const cached = await translationCache.get(cacheKey);
-      if (cached) {
-        safePost({ type: 'cached', translation: cached });
-        try { port.disconnect(); } catch {}
-        return;
-      }
+    // The key lookup and the cache lookup are independent; run them together.
+    const [apiKey, cached] = await Promise.all([
+      encryptedStorage.getApiKeyForProfile(settings.activeProfileId, settings.apiEndpoint),
+      request.retry ? Promise.resolve(null) : translationCache.get(cacheKey)
+    ]);
+    settings.apiKey = apiKey;
+
+    if (!settings.apiEndpoint || (provider !== 'ollama' && !settings.apiKey)) {
+      safePost({ type: 'error', error: ERROR_MESSAGES.NO_CONFIG });
+      try { port.disconnect(); } catch {}
+      return;
+    }
+
+    if (cached) {
+      safePost({ type: 'cached', translation: cached });
+      try { port.disconnect(); } catch {}
+      return;
     }
 
     try {
@@ -917,26 +1004,34 @@ chrome.runtime.onConnect.addListener((port) => {
 
       if (cancelled) return;
 
-      await translationCache.set(cacheKey, full);
-      const { historyEnabled = false } = await chrome.storage.local.get('historyEnabled');
-      if (historyEnabled) {
-        await translationHistory.append({
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          original: request.text,
-          translation: full,
-          firstLanguage: settings.firstLanguage,
-          secondLanguage: settings.secondLanguage,
-          translationStyle: settings.translationStyle,
-          apiModel: settings.apiModel,
-          swap: settings.swap,
-          provider,
-          format: 'markdown',
-          timestamp: Date.now()
-        });
-      }
-
+      // Show the final result first; persisting to the cache and history
+      // must not hold up the popup.
       safePost({ type: 'done', translation: full });
       try { port.disconnect(); } catch {}
+
+      try {
+        await translationCache.set(cacheKey, full);
+        // Re-read the preference now rather than trusting the request-start
+        // snapshot: the user may have opted out while the model was replying.
+        const { historyEnabled = false } = await chrome.storage.local.get('historyEnabled');
+        if (historyEnabled) {
+          await translationHistory.append({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            original: request.text,
+            translation: full,
+            firstLanguage: settings.firstLanguage,
+            secondLanguage: settings.secondLanguage,
+            translationStyle: settings.translationStyle,
+            apiModel: settings.apiModel,
+            swap: settings.swap,
+            provider,
+            format: 'markdown',
+            timestamp: Date.now()
+          });
+        }
+      } catch (persistError) {
+        console.error('Failed to persist translation:', persistError);
+      }
     } catch (error) {
       let errorMessage = error.message || ERROR_MESSAGES.GENERIC_ERROR;
       if (errorMessage.includes('Failed to fetch')) {

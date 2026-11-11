@@ -375,8 +375,46 @@ test('buildOpenAIRequestBody', async (t) => {
       instructions: 'sys',
       input: [{ role: 'user', content: 'hello' }],
       max_output_tokens: 1000,
+      reasoning: { effort: 'low' },
       stream: true
     });
+  });
+
+  await t.test('requests low reasoning effort on OpenAI chat completions only', () => {
+    const openai = core.buildOpenAIRequestBody({
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      model: 'gpt-6-luna',
+      messages,
+      maxOutputTokens: 1000
+    });
+    assert.equal(openai.reasoning_effort, 'low');
+    assert.equal('reasoning' in openai, false);
+
+    const custom = core.buildOpenAIRequestBody({
+      endpoint: 'https://my-proxy.example/v1/responses',
+      model: 'm',
+      messages,
+      maxOutputTokens: 1000
+    });
+    assert.equal('reasoning' in custom, false);
+    assert.equal('reasoning_effort' in custom, false);
+
+    // Matches detectProvider('openai') by substring, but is not api.openai.com.
+    const proxy = core.buildOpenAIRequestBody({
+      endpoint: 'https://openai-proxy.example/v1/chat/completions',
+      model: 'm',
+      messages,
+      maxOutputTokens: 1000
+    });
+    assert.equal('reasoning_effort' in proxy, false);
+    assert.equal(proxy.max_completion_tokens, 1000, 'existing provider routing is unchanged');
+  });
+
+  await t.test('isOfficialOpenAIEndpoint matches the exact host only', () => {
+    assert.equal(core.isOfficialOpenAIEndpoint('https://api.openai.com/v1/responses'), true);
+    assert.equal(core.isOfficialOpenAIEndpoint('https://openai-proxy.example/v1/responses'), false);
+    assert.equal(core.isOfficialOpenAIEndpoint('https://api.openai.com.evil.example/v1'), false);
+    assert.equal(core.isOfficialOpenAIEndpoint('not a url'), false);
   });
 
   await t.test('uses max_completion_tokens for OpenAI chat completions', () => {
@@ -418,10 +456,44 @@ test('adjustOpenAIBodyForError', async (t) => {
     assert.deepEqual(core.adjustOpenAIBodyForError(body, error), { model: 'm', max_output_tokens: 100 });
   });
 
+  await t.test('drops reasoning effort when rejected', () => {
+    const responses = { model: 'm', reasoning: { effort: 'low' }, temperature: 0.3 };
+    const responsesError = { error: { message: "Unsupported parameter: 'reasoning.effort' is not supported with this model.", param: 'reasoning.effort' } };
+    assert.deepEqual(core.adjustOpenAIBodyForError(responses, responsesError), { model: 'm', temperature: 0.3 });
+
+    const chat = { model: 'm', reasoning_effort: 'low' };
+    const chatError = { error: { message: 'Unrecognized request argument supplied: reasoning_effort', param: null } };
+    assert.deepEqual(core.adjustOpenAIBodyForError(chat, chatError), { model: 'm' });
+  });
+
   await t.test('returns null for unrelated or already-adjusted errors', () => {
     assert.equal(core.adjustOpenAIBodyForError({ model: 'm' }, { error: { param: 'temperature' } }), null);
     assert.equal(core.adjustOpenAIBodyForError({ model: 'm', temperature: 0.3 }, { error: { code: 'invalid_api_key' } }), null);
     assert.equal(core.adjustOpenAIBodyForError({ model: 'm' }, {}), null);
+  });
+});
+
+test('OpenAI body fixes', async (t) => {
+  const { OPENAI_BODY_FIXES: FIXES } = core;
+
+  await t.test('detectOpenAIBodyFix names the fix for a rejected parameter', () => {
+    const body = { model: 'm', temperature: 0.3, reasoning_effort: 'low' };
+    assert.equal(core.detectOpenAIBodyFix(body, { error: { param: 'temperature' } }), FIXES.dropTemperature);
+    assert.equal(core.detectOpenAIBodyFix(body, { error: { param: 'reasoning_effort' } }), FIXES.dropReasoning);
+    assert.equal(core.detectOpenAIBodyFix(body, { error: { code: 'invalid_api_key' } }), null);
+  });
+
+  await t.test('applyOpenAIBodyFixes replays remembered fixes on a fresh body', () => {
+    const body = { model: 'm', temperature: 0.3, max_tokens: 100, reasoning: { effort: 'low' } };
+    const fixed = core.applyOpenAIBodyFixes(body, [FIXES.dropTemperature, FIXES.dropReasoning, FIXES.renameMaxTokens]);
+    assert.deepEqual(fixed, { model: 'm', max_completion_tokens: 100 });
+    assert.deepEqual(body.temperature, 0.3, 'input body is not mutated');
+  });
+
+  await t.test('applyOpenAIBodyFixes tolerates fixes that no longer apply', () => {
+    const body = { model: 'm' };
+    assert.deepEqual(core.applyOpenAIBodyFixes(body, [FIXES.dropTemperature, 'unknown']), body);
+    assert.deepEqual(core.applyOpenAIBodyFixes(body, undefined), body);
   });
 });
 

@@ -1,6 +1,10 @@
 class TranslationPopup {
   constructor() {
     this.popup = null;
+    // Cancels the in-flight translation (pending render, port listeners,
+    // port). Set by translateText, called before a new request starts or the
+    // popup goes away, so a stale request can never draw into a newer popup.
+    this.cancelActiveTranslation = null;
     this.selectionTimeout = null;
     this.isEnabled = true;
     this.autoTranslate = false;
@@ -404,7 +408,16 @@ class TranslationPopup {
     this.popup.classList.add(`ai-translator-width-${this.popupWidth}`);
   }
 
+  abortActiveTranslation() {
+    if (this.cancelActiveTranslation) {
+      const cancel = this.cancelActiveTranslation;
+      this.cancelActiveTranslation = null;
+      cancel();
+    }
+  }
+
   remove() {
+    this.abortActiveTranslation();
     if (this.popup) {
       this.detachDocumentDragListeners();
       this.popup.remove();
@@ -429,6 +442,7 @@ class TranslationPopup {
   translateText(text, { retry = false } = {}) {
     // Open a fresh port per translation. Background streams deltas back; we
     // accumulate them into currentTranslation and re-render the popup body.
+    this.abortActiveTranslation();
     let port;
     try {
       port = chrome.runtime.connect({ name: 'translate' });
@@ -440,13 +454,41 @@ class TranslationPopup {
 
     let accumulated = '';
     let finished = false;
+    // Each render rebuilds the popup and re-parses the whole Markdown so far,
+    // so rendering per delta is quadratic in the output length. Coalesce
+    // deltas to at most one render per animation frame.
+    let renderFrame = null;
+    const cancelPendingRender = () => {
+      if (renderFrame !== null) {
+        cancelAnimationFrame(renderFrame);
+        renderFrame = null;
+      }
+    };
+    const scheduleStreamingRender = () => {
+      if (renderFrame !== null) return;
+      renderFrame = requestAnimationFrame(() => {
+        renderFrame = null;
+        if (superseded || finished || !this.popup) return;
+        this.updateContent(this.getStreamingHTML(accumulated));
+      });
+    };
+
+    // A superseded request stops rendering and closes its port; the
+    // background sees the disconnect and skips caching the partial result.
+    let superseded = false;
+    this.cancelActiveTranslation = () => {
+      superseded = true;
+      cancelPendingRender();
+      try { port.disconnect(); } catch { /* already closed */ }
+    };
 
     port.onMessage.addListener((msg) => {
-      if (!msg || !this.popup) return;
+      if (superseded || !msg || !this.popup) return;
+      if (msg.type !== 'delta') cancelPendingRender();
       if (msg.type === 'delta' && typeof msg.text === 'string') {
         accumulated += msg.text;
         this.currentTranslation = accumulated;
-        this.updateContent(this.getStreamingHTML(accumulated));
+        scheduleStreamingRender();
       } else if (msg.type === 'done') {
         finished = true;
         this.currentTranslation = msg.translation || accumulated;
@@ -463,7 +505,8 @@ class TranslationPopup {
     });
 
     port.onDisconnect.addListener(() => {
-      if (finished || !this.popup) return;
+      cancelPendingRender();
+      if (superseded || finished || !this.popup) return;
       if (accumulated) {
         // Stream cut off mid-flight — show what we have.
         this.currentTranslation = accumulated;
