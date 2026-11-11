@@ -238,9 +238,20 @@
   // parameter get it removed by adjustOpenAIBodyForError.
   const OPENAI_REASONING_EFFORT = 'low';
 
+  // Exact host check, unlike detectProvider's substring match: proxies whose
+  // URL merely contains "openai" must not get OpenAI-only parameters.
+  const isOfficialOpenAIEndpoint = (endpoint) => {
+    try {
+      return new URL(endpoint).hostname === 'api.openai.com';
+    } catch {
+      return false;
+    }
+  };
+
   const buildOpenAIRequestBody = ({ endpoint, model, messages, maxOutputTokens, stream }) => {
     const body = { model, temperature: 0.3 };
     const isOpenAI = detectProvider(endpoint) === 'openai';
+    const sendReasoning = isOfficialOpenAIEndpoint(endpoint);
     if (isOpenAIResponsesEndpoint(endpoint)) {
       const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
       if (system) body.instructions = system;
@@ -248,12 +259,12 @@
         .filter(m => m.role !== 'system')
         .map(m => ({ role: m.role, content: m.content }));
       body.max_output_tokens = maxOutputTokens;
-      if (isOpenAI) body.reasoning = { effort: OPENAI_REASONING_EFFORT };
+      if (sendReasoning) body.reasoning = { effort: OPENAI_REASONING_EFFORT };
     } else {
       body.messages = messages;
       if (isOpenAI) {
         body.max_completion_tokens = maxOutputTokens;
-        body.reasoning_effort = OPENAI_REASONING_EFFORT;
+        if (sendReasoning) body.reasoning_effort = OPENAI_REASONING_EFFORT;
       } else {
         body.max_tokens = maxOutputTokens;
       }
@@ -368,6 +379,7 @@
     parseOpenAIErrorMessage,
     parseClaudeErrorMessage,
     isOpenAIResponsesEndpoint,
+    isOfficialOpenAIEndpoint,
     buildOpenAIRequestBody,
     OPENAI_BODY_FIXES,
     applyOpenAIBodyFix,

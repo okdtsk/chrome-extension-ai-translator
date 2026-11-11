@@ -962,7 +962,6 @@ chrome.runtime.onConnect.addListener((port) => {
       translationStyle: DEFAULT_SETTINGS.translationStyle
     };
 
-    keys.push('historyEnabled');
     const stored = await chrome.storage.local.get(keys);
     const settings = { ...defaults, ...stored };
     const provider = translationService.detectProvider(settings.apiEndpoint);
@@ -1012,7 +1011,10 @@ chrome.runtime.onConnect.addListener((port) => {
 
       try {
         await translationCache.set(cacheKey, full);
-        if (settings.historyEnabled) {
+        // Re-read the preference now rather than trusting the request-start
+        // snapshot: the user may have opted out while the model was replying.
+        const { historyEnabled = false } = await chrome.storage.local.get('historyEnabled');
+        if (historyEnabled) {
           await translationHistory.append({
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             original: request.text,

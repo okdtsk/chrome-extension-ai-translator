@@ -398,6 +398,23 @@ test('buildOpenAIRequestBody', async (t) => {
     });
     assert.equal('reasoning' in custom, false);
     assert.equal('reasoning_effort' in custom, false);
+
+    // Matches detectProvider('openai') by substring, but is not api.openai.com.
+    const proxy = core.buildOpenAIRequestBody({
+      endpoint: 'https://openai-proxy.example/v1/chat/completions',
+      model: 'm',
+      messages,
+      maxOutputTokens: 1000
+    });
+    assert.equal('reasoning_effort' in proxy, false);
+    assert.equal(proxy.max_completion_tokens, 1000, 'existing provider routing is unchanged');
+  });
+
+  await t.test('isOfficialOpenAIEndpoint matches the exact host only', () => {
+    assert.equal(core.isOfficialOpenAIEndpoint('https://api.openai.com/v1/responses'), true);
+    assert.equal(core.isOfficialOpenAIEndpoint('https://openai-proxy.example/v1/responses'), false);
+    assert.equal(core.isOfficialOpenAIEndpoint('https://api.openai.com.evil.example/v1'), false);
+    assert.equal(core.isOfficialOpenAIEndpoint('not a url'), false);
   });
 
   await t.test('uses max_completion_tokens for OpenAI chat completions', () => {
