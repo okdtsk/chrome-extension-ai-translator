@@ -440,13 +440,32 @@ class TranslationPopup {
 
     let accumulated = '';
     let finished = false;
+    // Each render rebuilds the popup and re-parses the whole Markdown so far,
+    // so rendering per delta is quadratic in the output length. Coalesce
+    // deltas to at most one render per animation frame.
+    let renderFrame = null;
+    const cancelPendingRender = () => {
+      if (renderFrame !== null) {
+        cancelAnimationFrame(renderFrame);
+        renderFrame = null;
+      }
+    };
+    const scheduleStreamingRender = () => {
+      if (renderFrame !== null) return;
+      renderFrame = requestAnimationFrame(() => {
+        renderFrame = null;
+        if (finished || !this.popup) return;
+        this.updateContent(this.getStreamingHTML(accumulated));
+      });
+    };
 
     port.onMessage.addListener((msg) => {
       if (!msg || !this.popup) return;
+      if (msg.type !== 'delta') cancelPendingRender();
       if (msg.type === 'delta' && typeof msg.text === 'string') {
         accumulated += msg.text;
         this.currentTranslation = accumulated;
-        this.updateContent(this.getStreamingHTML(accumulated));
+        scheduleStreamingRender();
       } else if (msg.type === 'done') {
         finished = true;
         this.currentTranslation = msg.translation || accumulated;
@@ -463,6 +482,7 @@ class TranslationPopup {
     });
 
     port.onDisconnect.addListener(() => {
+      cancelPendingRender();
       if (finished || !this.popup) return;
       if (accumulated) {
         // Stream cut off mid-flight — show what we have.

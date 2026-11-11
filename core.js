@@ -231,8 +231,16 @@
   // on api.openai.com uses `max_completion_tokens` (newer models reject
   // `max_tokens`); custom endpoints keep `max_tokens`, which compatible
   // servers widely support.
+  //
+  // On api.openai.com we also ask for low reasoning effort: translation does
+  // not benefit from long hidden reasoning, and the default (medium) is the
+  // main source of latency on reasoning models. Models that reject the
+  // parameter get it removed by adjustOpenAIBodyForError.
+  const OPENAI_REASONING_EFFORT = 'low';
+
   const buildOpenAIRequestBody = ({ endpoint, model, messages, maxOutputTokens, stream }) => {
     const body = { model, temperature: 0.3 };
+    const isOpenAI = detectProvider(endpoint) === 'openai';
     if (isOpenAIResponsesEndpoint(endpoint)) {
       const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
       if (system) body.instructions = system;
@@ -240,10 +248,12 @@
         .filter(m => m.role !== 'system')
         .map(m => ({ role: m.role, content: m.content }));
       body.max_output_tokens = maxOutputTokens;
+      if (isOpenAI) body.reasoning = { effort: OPENAI_REASONING_EFFORT };
     } else {
       body.messages = messages;
-      if (detectProvider(endpoint) === 'openai') {
+      if (isOpenAI) {
         body.max_completion_tokens = maxOutputTokens;
+        body.reasoning_effort = OPENAI_REASONING_EFFORT;
       } else {
         body.max_tokens = maxOutputTokens;
       }
@@ -252,12 +262,41 @@
     return body;
   };
 
-  // Given a failed request body and the API's error payload, return a body
-  // with the offending parameter fixed so the call can be retried once, or
-  // null if the error is not one we know how to recover from. Covers models
-  // that reject a custom temperature (reasoning models) and endpoints that
-  // reject `max_tokens` in favor of `max_completion_tokens`.
-  const adjustOpenAIBodyForError = (body, errorData) => {
+  // Named body fixes, so the service worker can remember which ones a given
+  // endpoint + model needed and apply them up front on the next request
+  // instead of paying for a rejected round trip every time.
+  const OPENAI_BODY_FIXES = {
+    dropTemperature: 'drop_temperature',
+    dropReasoning: 'drop_reasoning',
+    renameMaxTokens: 'rename_max_tokens'
+  };
+
+  // Apply one named fix. Returns the same body when the fix does not apply.
+  const applyOpenAIBodyFix = (body, fix) => {
+    if (fix === OPENAI_BODY_FIXES.dropTemperature && 'temperature' in body) {
+      const { temperature, ...rest } = body;
+      return rest;
+    }
+    if (fix === OPENAI_BODY_FIXES.dropReasoning && ('reasoning' in body || 'reasoning_effort' in body)) {
+      const { reasoning, reasoning_effort: reasoningEffort, ...rest } = body;
+      return rest;
+    }
+    if (fix === OPENAI_BODY_FIXES.renameMaxTokens && 'max_tokens' in body) {
+      const { max_tokens: maxTokens, ...rest } = body;
+      return { ...rest, max_completion_tokens: maxTokens };
+    }
+    return body;
+  };
+
+  const applyOpenAIBodyFixes = (body, fixes) =>
+    (fixes || []).reduce((current, fix) => applyOpenAIBodyFix(current, fix), body);
+
+  // Given a failed request body and the API's error payload, return the name
+  // of the fix that addresses the rejected parameter, or null if the error is
+  // not one we know how to recover from. Covers models that reject a custom
+  // temperature or reasoning effort, and endpoints that reject `max_tokens`
+  // in favor of `max_completion_tokens`.
+  const detectOpenAIBodyFix = (body, errorData) => {
     const error = errorData && errorData.error;
     if (!error) return null;
     const param = error.param || '';
@@ -265,14 +304,23 @@
     const mentions = (name) => param === name || message.includes(`'${name}'`);
 
     if (mentions('temperature') && 'temperature' in body) {
-      const { temperature, ...rest } = body;
-      return rest;
+      return OPENAI_BODY_FIXES.dropTemperature;
+    }
+    const mentionsReasoning = mentions('reasoning') || mentions('reasoning.effort') ||
+      mentions('reasoning_effort') || message.includes('reasoning_effort');
+    if (mentionsReasoning && ('reasoning' in body || 'reasoning_effort' in body)) {
+      return OPENAI_BODY_FIXES.dropReasoning;
     }
     if (mentions('max_tokens') && 'max_tokens' in body) {
-      const { max_tokens: maxTokens, ...rest } = body;
-      return { ...rest, max_completion_tokens: maxTokens };
+      return OPENAI_BODY_FIXES.renameMaxTokens;
     }
     return null;
+  };
+
+  // Convenience wrapper: the fixed body, or null when no fix applies.
+  const adjustOpenAIBodyForError = (body, errorData) => {
+    const fix = detectOpenAIBodyFix(body, errorData);
+    return fix ? applyOpenAIBodyFix(body, fix) : null;
   };
 
   // Extract the generated text from a non-streaming OpenAI response. Handles
@@ -321,6 +369,10 @@
     parseClaudeErrorMessage,
     isOpenAIResponsesEndpoint,
     buildOpenAIRequestBody,
+    OPENAI_BODY_FIXES,
+    applyOpenAIBodyFix,
+    applyOpenAIBodyFixes,
+    detectOpenAIBodyFix,
     adjustOpenAIBodyForError,
     extractOpenAIResponseText,
     extractOpenAIStreamDelta
