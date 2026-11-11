@@ -17,6 +17,7 @@ const {
   applyOpenAIBodyFix,
   applyOpenAIBodyFixes,
   detectOpenAIBodyFix,
+  OPENAI_BODY_FIXES,
   extractOpenAIResponseText,
   extractOpenAIStreamDelta,
   ERROR_MESSAGES
@@ -499,7 +500,9 @@ class TranslationService {
   // POST to an OpenAI(-compatible) endpoint. If the API rejects a parameter
   // we know how to adjust (e.g. temperature or reasoning effort on some
   // models, max_tokens on newer models), retry with the fixed body. Each fix
-  // removes or renames the offending parameter, so the loop is bounded.
+  // removes, renames, or (for reasoning effort 'none' -> 'low') lowers the
+  // offending parameter at most once, so the loop is bounded by the number
+  // of fixes plus the first request.
   // Fixes are remembered per endpoint + model, so later requests skip the
   // rejected round trip. Returns the ok response; throws a user-facing error
   // otherwise.
@@ -509,7 +512,8 @@ class TranslationService {
     let currentBody = applyOpenAIBodyFixes(body, knownFixes);
     const learnedFixes = [];
 
-    for (let attempt = 0; attempt < 4; attempt++) {
+    const maxAttempts = Object.keys(OPENAI_BODY_FIXES).length + 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const response = await fetch(settings.apiEndpoint, {
         method: 'POST',
         headers: this.buildOpenAIHeaders(settings),
