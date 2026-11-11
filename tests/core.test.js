@@ -375,19 +375,19 @@ test('buildOpenAIRequestBody', async (t) => {
       instructions: 'sys',
       input: [{ role: 'user', content: 'hello' }],
       max_output_tokens: 1000,
-      reasoning: { effort: 'low' },
+      reasoning: { effort: 'none' },
       stream: true
     });
   });
 
-  await t.test('requests low reasoning effort on OpenAI chat completions only', () => {
+  await t.test('requests no reasoning effort on OpenAI chat completions only', () => {
     const openai = core.buildOpenAIRequestBody({
       endpoint: 'https://api.openai.com/v1/chat/completions',
       model: 'gpt-6-luna',
       messages,
       maxOutputTokens: 1000
     });
-    assert.equal(openai.reasoning_effort, 'low');
+    assert.equal(openai.reasoning_effort, 'none');
     assert.equal('reasoning' in openai, false);
 
     const custom = core.buildOpenAIRequestBody({
@@ -464,6 +464,33 @@ test('adjustOpenAIBodyForError', async (t) => {
     const chat = { model: 'm', reasoning_effort: 'low' };
     const chatError = { error: { message: 'Unrecognized request argument supplied: reasoning_effort', param: null } };
     assert.deepEqual(core.adjustOpenAIBodyForError(chat, chatError), { model: 'm' });
+
+    // A model that does not accept the parameter at all: drop it even when
+    // the effort is 'none', instead of first retrying with 'low'.
+    const noneUnsupported = { model: 'm', reasoning_effort: 'none' };
+    const noneUnsupportedError = { error: { message: 'Unrecognized request argument supplied: reasoning_effort', param: null } };
+    assert.deepEqual(core.adjustOpenAIBodyForError(noneUnsupported, noneUnsupportedError), { model: 'm' });
+
+    const noneUnsupportedParam = { model: 'm', reasoning: { effort: 'none' } };
+    const noneUnsupportedParamError = { error: { message: "Unsupported parameter: 'reasoning.effort' is not supported with this model.", param: 'reasoning.effort', code: 'unsupported_parameter' } };
+    assert.deepEqual(core.adjustOpenAIBodyForError(noneUnsupportedParam, noneUnsupportedParamError), { model: 'm' });
+  });
+
+  await t.test("lowers reasoning effort to 'low' when 'none' is rejected", () => {
+    // e.g. GPT-6 Astra and GPT-6.1 Sol accept reasoning effort but not 'none'.
+    const chat = { model: 'm', reasoning_effort: 'none', temperature: 0.3 };
+    const chatError = { error: { message: "Unsupported value: 'reasoning_effort' does not support 'none' with this model. Supported values are: 'low', 'medium', and 'high'.", param: 'reasoning_effort', code: 'unsupported_value' } };
+    assert.deepEqual(core.adjustOpenAIBodyForError(chat, chatError), { model: 'm', reasoning_effort: 'low', temperature: 0.3 });
+
+    const responses = { model: 'm', reasoning: { effort: 'none', summary: 'auto' } };
+    const responsesError = { error: { message: "Invalid value: 'none'. Supported values are: 'low', 'medium', and 'high'.", param: 'reasoning.effort', code: 'invalid_value' } };
+    assert.deepEqual(core.adjustOpenAIBodyForError(responses, responsesError), { model: 'm', reasoning: { effort: 'low', summary: 'auto' } });
+  });
+
+  await t.test("drops reasoning effort when 'low' is rejected after lowering", () => {
+    const body = { model: 'm', reasoning_effort: 'low' };
+    const error = { error: { message: "Unsupported value: 'reasoning_effort' does not support 'low' with this model.", param: 'reasoning_effort', code: 'unsupported_value' } };
+    assert.deepEqual(core.adjustOpenAIBodyForError(body, error), { model: 'm' });
   });
 
   await t.test('returns null for unrelated or already-adjusted errors', () => {
@@ -481,6 +508,28 @@ test('OpenAI body fixes', async (t) => {
     assert.equal(core.detectOpenAIBodyFix(body, { error: { param: 'temperature' } }), FIXES.dropTemperature);
     assert.equal(core.detectOpenAIBodyFix(body, { error: { param: 'reasoning_effort' } }), FIXES.dropReasoning);
     assert.equal(core.detectOpenAIBodyFix(body, { error: { code: 'invalid_api_key' } }), null);
+
+    const noneBody = { model: 'm', reasoning_effort: 'none' };
+    assert.equal(core.detectOpenAIBodyFix(noneBody, { error: { param: 'reasoning_effort', code: 'unsupported_value' } }), FIXES.lowerReasoning);
+    assert.equal(core.detectOpenAIBodyFix(noneBody, { error: { param: 'reasoning_effort', code: 'unsupported_parameter' } }), FIXES.dropReasoning);
+  });
+
+  await t.test('applyOpenAIBodyFixes replays a remembered reasoning fallback', () => {
+    const chat = { model: 'm', reasoning_effort: 'none', temperature: 0.3 };
+    assert.deepEqual(
+      core.applyOpenAIBodyFixes(chat, [FIXES.lowerReasoning, FIXES.dropTemperature]),
+      { model: 'm', reasoning_effort: 'low' }
+    );
+    assert.equal(chat.reasoning_effort, 'none', 'input body is not mutated');
+
+    const responses = { model: 'm', reasoning: { effort: 'none' } };
+    const lowered = core.applyOpenAIBodyFixes(responses, [FIXES.lowerReasoning]);
+    assert.deepEqual(lowered, { model: 'm', reasoning: { effort: 'low' } });
+    assert.equal(responses.reasoning.effort, 'none', 'nested reasoning object is not mutated');
+
+    // Lowering only applies to 'none'; other efforts are left alone.
+    const medium = { model: 'm', reasoning_effort: 'medium' };
+    assert.equal(core.applyOpenAIBodyFixes(medium, [FIXES.lowerReasoning]), medium);
   });
 
   await t.test('applyOpenAIBodyFixes replays remembered fixes on a fresh body', () => {

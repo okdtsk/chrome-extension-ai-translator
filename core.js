@@ -232,11 +232,15 @@
   // `max_tokens`); custom endpoints keep `max_tokens`, which compatible
   // servers widely support.
   //
-  // On api.openai.com we also ask for low reasoning effort: translation does
-  // not benefit from long hidden reasoning, and the default (medium) is the
-  // main source of latency on reasoning models. Models that reject the
-  // parameter get it removed by adjustOpenAIBodyForError.
-  const OPENAI_REASONING_EFFORT = 'low';
+  // On api.openai.com we also ask for no reasoning (effort 'none'):
+  // translation does not benefit from hidden reasoning, and the default
+  // (medium) is the main source of latency on reasoning models. Models that
+  // reject the 'none' value (e.g. GPT-6 Astra, GPT-6.1 Sol) are retried with
+  // OPENAI_FALLBACK_REASONING_EFFORT, which OpenAI recommends for them; models
+  // that reject the parameter itself get it removed. See
+  // adjustOpenAIBodyForError.
+  const OPENAI_REASONING_EFFORT = 'none';
+  const OPENAI_FALLBACK_REASONING_EFFORT = 'low';
 
   // Exact host check, unlike detectProvider's substring match: proxies whose
   // URL merely contains "openai" must not get OpenAI-only parameters.
@@ -279,6 +283,7 @@
   const OPENAI_BODY_FIXES = {
     dropTemperature: 'drop_temperature',
     dropReasoning: 'drop_reasoning',
+    lowerReasoning: 'lower_reasoning',
     renameMaxTokens: 'rename_max_tokens'
   };
 
@@ -287,6 +292,15 @@
     if (fix === OPENAI_BODY_FIXES.dropTemperature && 'temperature' in body) {
       const { temperature, ...rest } = body;
       return rest;
+    }
+    if (fix === OPENAI_BODY_FIXES.lowerReasoning) {
+      if (body.reasoning_effort === OPENAI_REASONING_EFFORT) {
+        return { ...body, reasoning_effort: OPENAI_FALLBACK_REASONING_EFFORT };
+      }
+      if (body.reasoning && body.reasoning.effort === OPENAI_REASONING_EFFORT) {
+        return { ...body, reasoning: { ...body.reasoning, effort: OPENAI_FALLBACK_REASONING_EFFORT } };
+      }
+      return body;
     }
     if (fix === OPENAI_BODY_FIXES.dropReasoning && ('reasoning' in body || 'reasoning_effort' in body)) {
       const { reasoning, reasoning_effort: reasoningEffort, ...rest } = body;
@@ -305,8 +319,9 @@
   // Given a failed request body and the API's error payload, return the name
   // of the fix that addresses the rejected parameter, or null if the error is
   // not one we know how to recover from. Covers models that reject a custom
-  // temperature or reasoning effort, and endpoints that reject `max_tokens`
-  // in favor of `max_completion_tokens`.
+  // temperature, the 'none' reasoning effort (lowered to 'low') or reasoning
+  // effort altogether (dropped), and endpoints that reject `max_tokens` in
+  // favor of `max_completion_tokens`.
   const detectOpenAIBodyFix = (body, errorData) => {
     const error = errorData && errorData.error;
     if (!error) return null;
@@ -320,6 +335,15 @@
     const mentionsReasoning = mentions('reasoning') || mentions('reasoning.effort') ||
       mentions('reasoning_effort') || message.includes('reasoning_effort');
     if (mentionsReasoning && ('reasoning' in body || 'reasoning_effort' in body)) {
+      // The error text for a rejected value is not documented, so lower
+      // unless the error says the parameter itself is unsupported. A wrong
+      // guess costs one extra round trip: 'low' is then rejected and dropped.
+      const effort = body.reasoning_effort ?? body.reasoning?.effort;
+      const parameterUnsupported = error.code === 'unsupported_parameter' ||
+        /unsupported parameter|unrecognized request argument/i.test(message);
+      if (effort === OPENAI_REASONING_EFFORT && !parameterUnsupported) {
+        return OPENAI_BODY_FIXES.lowerReasoning;
+      }
       return OPENAI_BODY_FIXES.dropReasoning;
     }
     if (mentions('max_tokens') && 'max_tokens' in body) {
